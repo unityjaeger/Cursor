@@ -425,13 +425,13 @@ local function popopt<T>(cursor: ReadCursor, pop_method: (cursor: ReadCursor) ->
 	end
 end
 
-local function pushopt_enum<T>(cursor: WriteCursor,value: T?, enums: EnumContainer<T>)
+local function pushopt_enum<T>(cursor: WriteCursor, value: T?, enums: EnumContainer<T>)
 	pushopt(cursor, function(c, v: T)
 		pushenum(c, v, enums)
 	end, value)
 end
 
-local function popopt_enum<T>(cursor: ReadCursor,enums: EnumContainer<T>): T?
+local function popopt_enum<T>(cursor: ReadCursor, enums: EnumContainer<T>): T?
 	return popopt(cursor, function(c)
 		return popenum(c, enums)
 	end)
