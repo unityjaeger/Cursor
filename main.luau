@@ -13,9 +13,14 @@ export type ReadCursor = {
 	buff: buffer
 }
 
-export type EnumContainer<T> = {
-	map: {T},
-	inverse: {[T]: number}
+export type Descriptor<T> = {
+	push: (cursor: WriteCursor, value: T) -> (),
+	pop: (cursor: ReadCursor) -> T
+}
+
+export type TupleDescriptor<T...> = {
+	push: (cursor: WriteCursor, T...) -> (),
+	pop: (cursor: ReadCursor) -> T...
 }
 
 local function writei24(buff: buffer, offset: number, value: number): ()
@@ -129,10 +134,45 @@ local function readf16(buff: buffer, offset: number): number
 	end
 end
 
+local function inverse_table<T>(tbl: {T}): {[T]: number}
+	local inverse = {}
+	for i, v in tbl do
+		inverse[v] = i
+	end
+	return inverse
+end
 
-local function write_cursor(): WriteCursor
+local function matches(arg1: any, arg2: any): boolean
+	if not (arg1 and arg2) then
+		return false
+	end
+
+	local type1, type2 = typeof(arg1), typeof(arg2)
+	if type1 ~= type2 then
+		return false
+	end
+
+	if type1 == "table" then
+		for key, value in arg1 do
+			if not matches(arg2[key], value) then
+				return false
+			end
+		end
+		for key, value in arg2 do
+			if not matches(arg1[key], value) then
+				return false
+			end
+		end
+	else
+		return arg1 == arg2
+	end
+
+	return false
+end
+
+local function write_cursor(global_offset: number?): WriteCursor
 	return {
-		pos = 0
+		pos = global_offset or 0
 	}
 end
 
@@ -142,9 +182,9 @@ local function finalize(cursor: WriteCursor): buffer
 	return buff
 end
 
-local function read_cursor(buff: buffer): ReadCursor
+local function read_cursor(buff: buffer, global_offset: number?): ReadCursor
 	return {
-		pos = 0,
+		pos = global_offset or 0,
 		buff = buff
 	}
 end
@@ -345,23 +385,12 @@ local function popbool(cursor: ReadCursor): (boolean, boolean, boolean, boolean,
 		bit32.band(value, 128) ~= 0
 end
 
-local function pushvectorf32(cursor: WriteCursor, value: vector)
-	local starting_pos = cursor.pos
-	buffer.writef32(RESERVED_BUFFER, starting_pos, value.x)
-	buffer.writef32(RESERVED_BUFFER, starting_pos + 4, value.y)
-	buffer.writef32(RESERVED_BUFFER, starting_pos + 8, value.z)
-	cursor.pos += 12
+local function pushbool_simple(cursor: WriteCursor, value: boolean)
+	pushu8(cursor, value and 1 or 0)
 end
 
-local function popvectorf32(cursor: ReadCursor): vector
-	local starting_pos = cursor.pos
-	local value = vector.create(
-		buffer.readf32(cursor.buff, starting_pos),
-		buffer.readf32(cursor.buff, starting_pos + 4),
-		buffer.readf32(cursor.buff, starting_pos + 8)
-	)
-	cursor.pos += 12
-	return value
+local function popboool_simple(cursor: ReadCursor): boolean
+	return popu8(cursor) == 1
 end
 
 local function pushstring(cursor: WriteCursor, value: string)
@@ -376,35 +405,6 @@ local function popstring(cursor: ReadCursor): string
 	local value = buffer.readstring(cursor.buff, cursor.pos, len)
 	cursor.pos += len
 	return value
-end
-
-local function inverse_copy<T>(tbl: {T}): {[T]: number}
-	local inverse = {}
-	for i, v in tbl do
-		inverse[v] = i
-	end
-	return inverse
-end
-
-local function create_enum_table<T>(tbl: {T}): EnumContainer<T>
-	return {
-		map = tbl,
-		inverse = inverse_copy(tbl)
-	}
-end
-
-local function create_enum_vararg<T>(...: T): EnumContainer<T>
-	return create_enum_table({...})
-end
-
-local function pushenum<T>(cursor: WriteCursor, value: T, enums: EnumContainer<T>)
-	local index = enums.inverse[value]
-	pushu8(cursor, index - 1)
-end
-
-local function popenum<T>(cursor: ReadCursor, enums: EnumContainer<T>): T
-	local index = popu8(cursor)
-	return enums.map[index + 1]
 end
 
 local function pushopt<T>(cursor: WriteCursor, push_method: (cursor: WriteCursor, value: T) -> (), value: T?)
@@ -425,17 +425,275 @@ local function popopt<T>(cursor: ReadCursor, pop_method: (cursor: ReadCursor) ->
 	end
 end
 
-local function pushopt_enum<T>(cursor: WriteCursor, value: T?, enums: EnumContainer<T>)
-	pushopt(cursor, function(c, v: T)
-		pushenum(c, v, enums)
-	end, value)
+local literal_descriptor_cache = {}
+local function literal_descriptor<T>(literals: {T}): Descriptor<T>
+	if literal_descriptor_cache[literals] then
+		return literal_descriptor_cache[literals]
+	end
+	
+	local inverse_literals = inverse_table(literals)
+	
+	local descriptor: Descriptor<T> = {
+		push = function(cursor, value: T)
+			local index = inverse_literals[value]
+			pushu8(cursor, index - 1)
+		end,
+		pop = function(cursor)
+			local index = popu8(cursor)
+			return literals[index + 1]
+		end,
+	}
+	
+	literal_descriptor_cache[literals] = descriptor
+	
+	return descriptor
 end
 
-local function popopt_enum<T>(cursor: ReadCursor, enums: EnumContainer<T>): T?
-	return popopt(cursor, function(c)
-		return popenum(c, enums)
-	end)
+local vector_descriptor_cache = {}
+local function vector_descriptor<number>(inner: Descriptor<number>): Descriptor<vector>
+	if vector_descriptor_cache[inner] then
+		return vector_descriptor_cache[inner]
+	end
+	
+	local push, pop = inner.push, inner.pop
+	
+	local descriptor: Descriptor<vector> = {
+		push = function(cursor, value: vector)
+			push(cursor, value.x)
+			push(cursor, value.y)
+			push(cursor, value.z)
+		end,
+		pop = function(cursor)
+			return vector.create(
+				pop(cursor),
+				pop(cursor),
+				pop(cursor)
+			)
+		end,
+	}
+	
+	vector_descriptor_cache[inner] = descriptor
+	
+	return descriptor
 end
+
+local opt_descriptor_cache = {}
+local function opt_descriptor<T>(inner: Descriptor<T>): Descriptor<T?>
+	if opt_descriptor_cache[inner] then
+		return opt_descriptor_cache[inner]
+	end
+	
+	local push, pop = inner.push, inner.pop
+	
+	--inline for slightly better speed yknow
+	local descriptor: Descriptor<T?> = {
+		push = function(cursor, value: T?)
+			if value == nil then
+				pushu8(cursor, 0)
+			else
+				pushu8(cursor, 1)
+				push(cursor, value)
+			end
+		end,
+		pop = function(cursor)
+			local present = popu8(cursor)
+			if present == 1 then
+				return pop(cursor)
+			else
+				return nil
+			end
+		end,
+	}
+	
+	opt_descriptor_cache[inner] = descriptor
+	
+	return descriptor
+end
+
+local struct_descriptor_cache = {}
+local function struct_descriptor<T>(struct: T): Descriptor<T>
+	if struct_descriptor_cache[struct] then
+		return struct_descriptor_cache[struct]
+	end
+	
+	local descriptor: Descriptor<T> = {
+		push = function(cursor, value)
+			for field, inner in struct :: {[string]: Descriptor<any>} do
+				inner.push(cursor, value[field])
+			end
+		end,
+		pop = function(cursor)
+			local result = {}
+			for field, inner in struct :: {[string]: Descriptor<any>} do
+				result[field] = inner.pop(cursor)
+			end
+			return result
+		end,
+	}
+	
+	struct_descriptor_cache[struct] = descriptor
+	
+	return descriptor
+end
+
+local array_descriptor_cache = {}
+local function array_descriptor<T>(inner: Descriptor<T>): Descriptor<{T}>
+	if array_descriptor_cache[inner] then
+		return array_descriptor_cache[inner]
+	end
+	
+	local push, pop = inner.push, inner.pop
+	
+	local descriptor: Descriptor<{T}> = {
+		push = function(cursor, value: {T})
+			pushvlq(cursor, #value)
+			for _, entry in value do
+				push(cursor, entry)
+			end
+		end,
+		pop = function(cursor)
+			local len = popvlq(cursor)
+			local result = table.create(len)
+			for i = 1, len do
+				table.insert(result, pop(cursor))
+			end
+			return result
+		end,
+	}
+	
+	array_descriptor_cache[inner] = descriptor
+	
+	return descriptor
+end
+
+local map_descriptor_cache = {}
+local function map_descriptor<K, V>(inner_key: Descriptor<K>, inner_value: Descriptor<V>): Descriptor<{[K]: V}>
+	if map_descriptor_cache[inner_key] and map_descriptor_cache[inner_key][inner_value] then
+		return map_descriptor_cache[inner_key][inner_value]
+	end
+	
+	local key_push, key_pop = inner_key.push, inner_key.pop
+	local value_push, value_pop = inner_value.push, inner_value.pop
+	
+	local descriptor: Descriptor<{[K]: V}> = {
+		push = function(cursor, value: {[K]: V})
+			local len = 0
+			for key, entry in value do
+				len += 1
+			end
+			
+			pushvlq(cursor, len)
+			
+			for key, entry in value do
+				key_push(cursor, key)
+				value_push(cursor, entry)
+			end
+		end,
+		pop = function(cursor)
+			local len = popvlq(cursor)
+			local map = {}
+			
+			for i = 1, len do
+				map[key_pop(cursor)] = value_pop(cursor)
+			end
+			
+			return map
+		end,
+	}
+	
+	map_descriptor_cache[inner_key] = {[inner_value] = descriptor}
+	
+	return descriptor
+end
+
+local function T<T>(value: Descriptor<T>): T
+	return value
+end
+
+local u8_descriptor: Descriptor<number> = {
+	push = pushu8,
+	pop = popu8,
+}
+
+local u16_descriptor: Descriptor<number> = {
+	push = pushu16,
+	pop = popu16,
+}
+
+local u24_descriptor: Descriptor<number> = {
+	push = pushu24,
+	pop = popu24,
+}
+
+local u32_descriptor: Descriptor<number> = {
+	push = pushu32,
+	pop = popu32,
+}
+
+local u53_descriptor: Descriptor<number> = {
+	push = pushu53,
+	pop = popu53,
+}
+
+local i8_descriptor: Descriptor<number> = {
+	push = pushi8,
+	pop = popi8,
+}
+
+local i16_descriptor: Descriptor<number> = {
+	push = pushi16,
+	pop = popi16,
+}
+
+local i24_descriptor: Descriptor<number> = {
+	push = pushi24,
+	pop = popi24,
+}
+
+local i32_descriptor: Descriptor<number> = {
+	push = pushi32,
+	pop = popi32,
+}
+
+local i53_descriptor: Descriptor<number> = {
+	push = pushi53,
+	pop = popi53,
+}
+
+local f16_descriptor: Descriptor<number> = {
+	push = pushf16,
+	pop = popf16,
+}
+
+local f32_descriptor: Descriptor<number> = {
+	push = pushf32,
+	pop = popf32,
+}
+
+local f64_descriptor: Descriptor<number> = {
+	push = pushf64,
+	pop = popf64,
+}
+
+local vlq_descriptor: Descriptor<number> = {
+	push = pushvlq,
+	pop = popvlq,
+}
+
+local string_descriptor: Descriptor<string> = {
+	push = pushstring,
+	pop = popstring,
+}
+
+local bool_descriptor: TupleDescriptor<...boolean> = {
+	push = pushbool,
+	pop = popbool
+}
+
+local bool_simple_descriptor: Descriptor<boolean> = {
+	push = pushbool_simple,
+	pop = popboool_simple
+}
 
 return {
 	write_cursor = write_cursor,
@@ -477,21 +735,39 @@ return {
 	pushbool = pushbool,
 	popbool = popbool,
 	
-	pushvectorf32 = pushvectorf32,
-	popvectorf32 = popvectorf32,
-	
 	pushstring = pushstring,
 	popstring = popstring,
-	
-	create_enum_vararg = create_enum_vararg,
-	create_enum_table = create_enum_table,
-	
-	pushenum = pushenum,
-	popenum = popenum,
 	
 	pushopt = pushopt,
 	popopt = popopt,
 	
-	pushopt_enum = pushopt_enum,
-	popopt_enum = popopt_enum
+	u8 = u8_descriptor,
+	u16 = u16_descriptor,
+	u24 = u24_descriptor,
+	u32 = u32_descriptor,
+	u53 = u53_descriptor,
+	
+	i8 = i8_descriptor,
+	i16 = i16_descriptor,
+	i24 = i24_descriptor,
+	i32 = i32_descriptor,
+	i53 = i53_descriptor,
+	
+	f16 = f16_descriptor,
+	f32 = f32_descriptor,
+	f64 = f64_descriptor,
+	
+	vlq = vlq_descriptor,
+	
+	bool = bool_descriptor,
+	bool_simple = bool_simple_descriptor,
+	
+	string = string_descriptor,
+	
+	literal = literal_descriptor,
+	vector = vector_descriptor,
+	opt = opt_descriptor,
+	struct = struct_descriptor,
+	array = array_descriptor,
+	map = map_descriptor
 }
