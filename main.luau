@@ -614,12 +614,12 @@ local function literal_descriptor<T>(literals: {T}): Descriptor<T>
 end
 
 local vector_descriptor_cache = {}
-local function vector_descriptor<number>(inner: Descriptor<number>): Descriptor<vector>
-	if vector_descriptor_cache[inner] then
-		return vector_descriptor_cache[inner]
+local function vector_descriptor<number>(number_descriptor: Descriptor<number>): Descriptor<vector>
+	if vector_descriptor_cache[number_descriptor] then
+		return vector_descriptor_cache[number_descriptor]
 	end
 	
-	local push, pop = inner.push, inner.pop
+	local push, pop = number_descriptor.push, number_descriptor.pop
 	
 	local descriptor: Descriptor<vector> = {
 		push = function(cursor, value: vector)
@@ -636,7 +636,7 @@ local function vector_descriptor<number>(inner: Descriptor<number>): Descriptor<
 		end,
 	}
 	
-	vector_descriptor_cache[inner] = descriptor
+	vector_descriptor_cache[number_descriptor] = descriptor
 	
 	return descriptor
 end
@@ -793,12 +793,12 @@ local function struct_descriptor<T>(struct: T): Descriptor<T>
 end
 
 local array_descriptor_cache = {}
-local function array_descriptor<T>(inner: Descriptor<T>): Descriptor<{T}>
-	if array_descriptor_cache[inner] then
-		return array_descriptor_cache[inner]
+local function array_descriptor<T>(element_descriptor: Descriptor<T>): Descriptor<{T}>
+	if array_descriptor_cache[element_descriptor] then
+		return array_descriptor_cache[element_descriptor]
 	end
 	
-	local push, pop = inner.push, inner.pop
+	local push, pop = element_descriptor.push, element_descriptor.pop
 	
 	local descriptor: Descriptor<{T}> = {
 		push = function(cursor, value: {T})
@@ -817,7 +817,7 @@ local function array_descriptor<T>(inner: Descriptor<T>): Descriptor<{T}>
 		end,
 	}
 	
-	array_descriptor_cache[inner] = descriptor
+	array_descriptor_cache[element_descriptor] = descriptor
 	
 	return descriptor
 end
