@@ -42,7 +42,7 @@ local function writei24(buff: buffer, offset: number, value: number): ()
 end
 
 local function readi24(buff: buffer, offset: number): number
-	local value: number = 256 * buffer.readu16(buff, offset) + buffer.readu8(buff, offset + 2)
+	local value = 256 * buffer.readu16(buff, offset) + buffer.readu8(buff, offset + 2)
 	if value >= 8388608 then
 		return value - 16777216
 	end
@@ -76,7 +76,7 @@ local function writei53(buff: buffer, offset: number, value: number): ()
 end
 
 local function readi53(buff: buffer, offset: number): number
-	local value: number = 16777216 * buffer.readu32(buff, offset) + readu24(buff, offset + 4)
+	local value = 16777216 * buffer.readu32(buff, offset) + readu24(buff, offset + 4)
 	if value >= 4503599627370496 then
 		value = value - 9007199254740992
 	end
@@ -595,6 +595,8 @@ local function literal_descriptor<T>(literals: {T}): Descriptor<T>
 		return literal_descriptor_cache[literals]
 	end
 	
+	assert(#literals < 256)
+	
 	local inverse_literals = inverse_table(literals)
 	
 	local descriptor: Descriptor<T> = {
@@ -869,7 +871,7 @@ local function cframe_descriptor(position_descriptor: Descriptor<number>, positi
 		return cframe_descriptor_cache[position_descriptor]
 	end
 	
-	local push, pop = position_descriptor.push, position_descriptor.pop
+	local position_push, position_pop = position_descriptor.push, position_descriptor.pop
 	
 	local scale = position_scale or 1
 	
@@ -880,16 +882,21 @@ local function cframe_descriptor(position_descriptor: Descriptor<number>, positi
 			pushu16(cursor, math.map(rot_y, -PI, PI, 0, 2^16 - 1))
 			pushu16(cursor, math.map(rot_z, -PI, PI, 0, 2^16 - 1))
 
-			push(cursor, value.X * scale)
-			push(cursor, value.Y * scale)
-			push(cursor, value.Z * scale)
+			position_push(cursor, value.X * scale)
+			position_push(cursor, value.Y * scale)
+			position_push(cursor, value.Z * scale)
 		end,
 		pop = function(cursor)
 			local q_x = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
 			local q_y = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
 			local q_z = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
 			local w = math.sqrt(1 - math.clamp(q_x * q_x + q_y * q_y + q_z * q_z, 0, 1))
-			return CFrame.new(pop(cursor) / scale, pop(cursor) / scale, pop(cursor) / scale, q_x, q_y, q_z, w)
+			return CFrame.new(
+				position_pop(cursor) / scale,
+				position_pop(cursor) / scale,
+				position_pop(cursor) / scale,
+				q_x, q_y, q_z, w
+			)
 		end,
 	}
 	
@@ -936,6 +943,43 @@ local function variant_descriptor(variants: {[string]: Descriptor<any>}): Descri
 	
 	variant_descriptor_cache[variants] = descriptor
 
+	return descriptor
+end
+
+local bitmask_descriptor_cache = {}
+local function bitmask_descriptor(byte_count: number): Descriptor<{boolean}>
+	if bitmask_descriptor_cache[byte_count] then
+		return bitmask_descriptor_cache[byte_count]
+	end
+	
+	local descriptor: Descriptor<{boolean}> = {
+		push = function(cursor, value: {boolean})
+			for i = 0, byte_count - 1 do
+				local byte = 0
+				for j = 0, 7 do
+					local index = i * 8 + j + 1
+					byte = bit32.bor(byte, bit32.lshift(value[index] == true and 1 or 0, j))
+				end
+				pushu8(cursor, byte)
+			end
+		end,
+		pop = function(cursor)
+			local result = table.create(byte_count * 8, false) :: {boolean}
+			for i = 0, byte_count - 1 do
+				local byte = popu8(cursor)
+				for j = 0, 7 do
+					if bit32.band(bit32.rshift(byte, j), 1) == 1 then
+						local index = i * 8 + j + 1
+						result[i + j + 1] = true
+					end
+				end
+			end
+			return result
+		end,
+	}
+	
+	bitmask_descriptor_cache[byte_count] = descriptor
+	
 	return descriptor
 end
 
@@ -1031,7 +1075,8 @@ return {
 	array = array_descriptor,
 	map = map_descriptor,
 	cframe_descriptor = cframe_descriptor,
-	variant_descriptor= variant_descriptor,
+	variant_descriptor = variant_descriptor,
+	bitmask_descriptor = bitmask_descriptor,
 	
 	T = T
 }
