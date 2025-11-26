@@ -894,6 +894,7 @@ return {
 	
 	pushopt = pushopt,
 	popopt = popopt,
+	mark_opt = mark_opt,
 	
 	u8 = u8_descriptor,
 	u16 = u16_descriptor,
