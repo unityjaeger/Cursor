@@ -3,6 +3,7 @@
 --!strict
 
 local RESERVED_BUFFER = buffer.create(1e6)
+local PI = math.pi
 
 export type WriteCursor = {
 	pos: number,
@@ -450,6 +451,20 @@ local function popstring(cursor: ReadCursor): string
 	return value
 end
 
+local function pushcolor3(cursor: WriteCursor, value: Color3)
+	pushu8(cursor, value.R * 255)
+	pushu8(cursor, value.G * 255)
+	pushu8(cursor, value.B * 255)
+end
+
+local function popcolor3(cursor: ReadCursor): Color3
+	return Color3.fromRGB(
+		popu8(cursor),
+		popu8(cursor),
+		popu8(cursor)
+	)
+end
+
 local function pushopt<T>(cursor: WriteCursor, push_method: (cursor: WriteCursor, value: T) -> (), value: T?)
 	if value == nil then
 		pushu8(cursor, 0)
@@ -466,6 +481,12 @@ local function popopt<T>(cursor: ReadCursor, pop_method: (cursor: ReadCursor) ->
 	else
 		return nil
 	end
+end
+
+local function mark_opt<T>(inner: Descriptor<T>): Descriptor<T?>
+	local copy = table.clone(inner)
+	copy.optional = true
+	return copy
 end
 
 local u8_descriptor: Descriptor<number> = {
@@ -563,6 +584,11 @@ local bool_simple_descriptor: Descriptor<boolean> = {
 	pop = popboool_simple
 }
 
+local color3_descriptor: Descriptor<Color3> = {
+	push = pushcolor3,
+	pop = popcolor3
+}
+
 local literal_descriptor_cache = {}
 local function literal_descriptor<T>(literals: {T}): Descriptor<T>
 	if literal_descriptor_cache[literals] then
@@ -646,12 +672,6 @@ local function opt_descriptor<T>(inner: Descriptor<T>): Descriptor<T?>
 	opt_descriptor_cache[inner] = descriptor
 	
 	return descriptor
-end
-
-local function mark_opt<T>(inner: Descriptor<T>): Descriptor<T?>
-	local copy = table.clone(inner)
-	copy.optional = true
-	return copy
 end
 
 local function simple_struct<T>(fields: {StructField}): Descriptor<T>
@@ -803,13 +823,13 @@ local function array_descriptor<T>(inner: Descriptor<T>): Descriptor<{T}>
 end
 
 local map_descriptor_cache = {}
-local function map_descriptor<K, V>(inner_key: Descriptor<K>, inner_value: Descriptor<V>): Descriptor<{[K]: V}>
-	if map_descriptor_cache[inner_key] and map_descriptor_cache[inner_key][inner_value] then
-		return map_descriptor_cache[inner_key][inner_value]
+local function map_descriptor<K, V>(key_descriptor: Descriptor<K>, value_descriptor: Descriptor<V>): Descriptor<{[K]: V}>
+	if map_descriptor_cache[key_descriptor] and map_descriptor_cache[key_descriptor][value_descriptor] then
+		return map_descriptor_cache[key_descriptor][value_descriptor]
 	end
 	
-	local key_push, key_pop = inner_key.push, inner_key.pop
-	local value_push, value_pop = inner_value.push, inner_value.pop
+	local key_push, key_pop = key_descriptor.push, key_descriptor.pop
+	local value_push, value_pop = value_descriptor.push, value_descriptor.pop
 	
 	local descriptor: Descriptor<{[K]: V}> = {
 		push = function(cursor, value: {[K]: V})
@@ -837,7 +857,43 @@ local function map_descriptor<K, V>(inner_key: Descriptor<K>, inner_value: Descr
 		end,
 	}
 	
-	map_descriptor_cache[inner_key] = {[inner_value] = descriptor}
+	map_descriptor_cache[key_descriptor] = {[value_descriptor] = descriptor}
+	
+	return descriptor
+end
+
+local cframe_descriptor_cache = {}
+local function cframe_descriptor(position_descriptor: Descriptor<number>, position_scale: number?): Descriptor<CFrame>
+	if cframe_descriptor_cache[position_descriptor] then
+		warn("cached cframe descriptors may not have the same position_scale if a different one was defined")
+		return cframe_descriptor_cache[position_descriptor]
+	end
+	
+	local push, pop = position_descriptor.push, position_descriptor.pop
+	
+	local scale = position_scale or 1
+	
+	local descriptor: Descriptor<CFrame> = {
+		push = function(cursor, value: CFrame)
+			local rot_x, rot_y, rot_z = value:ToOrientation()
+			pushu16(cursor, math.map(rot_x, -PI, PI, 0, 2^16 - 1))
+			pushu16(cursor, math.map(rot_y, -PI, PI, 0, 2^16 - 1))
+			pushu16(cursor, math.map(rot_z, -PI, PI, 0, 2^16 - 1))
+
+			push(cursor, value.X * scale)
+			push(cursor, value.Y * scale)
+			push(cursor, value.Z * scale)
+		end,
+		pop = function(cursor)
+			local q_x = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
+			local q_y = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
+			local q_z = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
+			local w = math.sqrt(1 - math.clamp(q_x * q_x + q_y * q_y + q_z * q_z, 0, 1))
+			return CFrame.new(pop(cursor) / scale, pop(cursor) / scale, pop(cursor) / scale, q_x, q_y, q_z, w)
+		end,
+	}
+	
+	cframe_descriptor_cache[position_descriptor] = descriptor
 	
 	return descriptor
 end
@@ -892,6 +948,9 @@ return {
 	pushstring = pushstring,
 	popstring = popstring,
 	
+	pushcolor3 = pushcolor3,
+	popcolor3 = popcolor3,
+	
 	pushopt = pushopt,
 	popopt = popopt,
 	mark_opt = mark_opt,
@@ -922,12 +981,15 @@ return {
 	
 	string = string_descriptor,
 	
+	color3_descriptor = color3_descriptor,
+	
 	literal = literal_descriptor,
 	vector = vector_descriptor,
 	opt = opt_descriptor,
 	struct = struct_descriptor,
 	array = array_descriptor,
 	map = map_descriptor,
+	cframe_descriptor = cframe_descriptor,
 	
 	T = T
 }
