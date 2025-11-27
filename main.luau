@@ -33,6 +33,97 @@ type OptStructField = StructField & {
 	bitmask: number
 }
 
+type function EitherOr(a: type, b: type)
+    if a:is("unknown") then
+        return b
+    else
+        return a
+    end
+end
+
+export type function SetTransformer(t: type)
+    local new = types.newtable()
+    for _, v in t:components() do
+        new:setproperty(v, types.optional(types.boolean))
+    end
+    return new :: any
+end
+
+type function GetDescriptorType(t: type)
+    if t.tag ~= "table" then
+        return types.never
+    end
+
+    local des_fn = t:readproperty(types.singleton("pop"))
+    if not des_fn or not des_fn:is("function") then
+        return types.never
+    end
+
+    local ret = des_fn:returns().head
+    if not ret or not ret[1] then
+        return types.never
+    end
+
+    return ret[1]
+end
+
+type function StructTransformer(t: type)
+    if t.tag ~= "table" then
+        return t
+    end
+
+    local mt = t:metatable()
+    if mt then
+        local index_singleton = types.singleton("__index")
+        for key, v in mt:properties() do
+            if key == index_singleton then
+                t = v.read or v.write :: any
+            end
+        end
+    end
+
+    local tbl_props = t:properties()
+
+    local phantom_data = GetDescriptorType(t)
+    if phantom_data ~= types.never then
+        return StructTransformer(phantom_data)
+    end
+
+    local indexer = t:indexer()
+    if indexer then
+        local new = types.newtable()
+        new:setindexer(StructTransformer(indexer.index), StructTransformer(indexer.readresult))
+        return new :: any
+    end
+
+    local new = types.newtable()
+    for key, v in tbl_props do
+        local value = v.read or v.write
+        new:setproperty(key, StructTransformer(value))
+    end
+    return new :: any
+end
+
+type function VariantTransformer(t: type)
+    local t_props = t:properties()
+
+    local intersect
+
+    for k, v in t_props do
+        local new_t = types.newtable()
+        new_t:setproperty(types.singleton("kind"), k)
+        new_t:setproperty(types.singleton("value"), v.read)
+
+        if not intersect then
+            intersect = new_t
+        else
+            intersect = types.unionof(intersect, new_t)
+        end
+    end
+
+    return intersect :: any
+end
+
 local function writei24(buff: buffer, offset: number, value: number): ()
 	if value < 0 then
 		value = value + 16777216
@@ -595,7 +686,7 @@ local function literal_descriptor<T>(literals: {T}): Descriptor<T>
 		return literal_descriptor_cache[literals]
 	end
 	
-	assert(#literals < 256)
+	assert(#literals < 256, "cannot have more than 255 literals")
 	
 	local inverse_literals = inverse_table(literals)
 	
@@ -739,7 +830,7 @@ local function optional_struct<T>(fields: {StructField}, opt_fields: {OptStructF
 end
 
 local struct_descriptor_cache = {}
-local function struct_descriptor<T>(struct: T): Descriptor<T>
+local function struct_descriptor_hidden<T>(struct: T): Descriptor<T>
 	if struct_descriptor_cache[struct] then
 		return struct_descriptor_cache[struct]
 	end
@@ -792,6 +883,10 @@ local function struct_descriptor<T>(struct: T): Descriptor<T>
 	struct_descriptor_cache[struct] = descriptor
 	
 	return descriptor
+end
+
+local function struct_descriptor<T>(struct: T): Descriptor<StructTransformer<T>>
+    return struct_descriptor_hidden(struct)
 end
 
 local array_descriptor_cache = {}
@@ -864,6 +959,43 @@ local function map_descriptor<K, V>(key_descriptor: Descriptor<K>, value_descrip
 	return descriptor
 end
 
+local id_to_rotation = {
+    CFrame.Angles(0, 0, 0),
+    CFrame.Angles(math.rad(90), 0, 0),
+    CFrame.Angles(0, math.rad(180), math.rad(180)),
+    CFrame.Angles(math.rad(-90), 0, 0),
+    CFrame.Angles(0, math.rad(180), math.rad(90)),
+    CFrame.Angles(0, math.rad(90), math.rad(90)),
+    CFrame.Angles(0, 0, math.rad(90)),
+    CFrame.Angles(0, math.rad(-90), math.rad(90)),
+    CFrame.Angles(math.rad(-90), math.rad(-90), 0),
+    CFrame.Angles(0, math.rad(-90), 0),
+    CFrame.Angles(math.rad(90), math.rad(-90), 0),
+    CFrame.Angles(0, math.rad(90), math.rad(180)),
+    CFrame.Angles(0, math.rad(-90), math.rad(180)),
+    CFrame.Angles(0, math.rad(180), 0),
+    CFrame.Angles(math.rad(-90), math.rad(-180), 0),
+    CFrame.Angles(0, 0, math.rad(180)),
+    CFrame.Angles(math.rad(90), math.rad(180), 0),
+    CFrame.Angles(0, 0, math.rad(-90)),
+    CFrame.Angles(0, math.rad(-90), math.rad(-90)),
+    CFrame.Angles(0, math.rad(-180), math.rad(-90)),
+    CFrame.Angles(0, math.rad(90), math.rad(-90)),
+    CFrame.Angles(math.rad(90), math.rad(90), 0),
+    CFrame.Angles(0, math.rad(90), 0),
+    CFrame.Angles(math.rad(-90), math.rad(90), 0),
+}
+
+local rotation_to_id: {[number]: {[number]: {[number]: number}}} = {}
+
+for id, cframe in id_to_rotation do
+    local x, y, z = cframe:ToOrientation()
+
+    rotation_to_id[x] = rotation_to_id[x] or {}
+    rotation_to_id[x][y] = rotation_to_id[x][y] or {}
+    rotation_to_id[x][y][z] = id
+end
+
 local cframe_descriptor_cache = {}
 local function cframe_descriptor(position_descriptor: Descriptor<number>, position_scale: number?): Descriptor<CFrame>
 	if cframe_descriptor_cache[position_descriptor] then
@@ -878,25 +1010,42 @@ local function cframe_descriptor(position_descriptor: Descriptor<number>, positi
 	local descriptor: Descriptor<CFrame> = {
 		push = function(cursor, value: CFrame)
 			local rot_x, rot_y, rot_z = value:ToOrientation()
-			pushu16(cursor, math.map(rot_x, -PI, PI, 0, 2^16 - 1))
-			pushu16(cursor, math.map(rot_y, -PI, PI, 0, 2^16 - 1))
-			pushu16(cursor, math.map(rot_z, -PI, PI, 0, 2^16 - 1))
+            local id = rotation_to_id[rot_x] and rotation_to_id[rot_x][rot_y] and rotation_to_id[rot_x][rot_y][rot_z]
+            if id then
+                pushu8(cursor, id)
+            else
+                pushu8(cursor, 0)
+                pushu16(cursor, math.map(rot_x, -PI, PI, 0, 2^16 - 1))
+                pushu16(cursor, math.map(rot_y, -PI, PI, 0, 2^16 - 1))
+                pushu16(cursor, math.map(rot_z, -PI, PI, 0, 2^16 - 1))
+            end
 
 			position_push(cursor, value.X * scale)
 			position_push(cursor, value.Y * scale)
 			position_push(cursor, value.Z * scale)
 		end,
 		pop = function(cursor)
-			local q_x = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
-			local q_y = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
-			local q_z = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
-			local w = math.sqrt(1 - math.clamp(q_x * q_x + q_y * q_y + q_z * q_z, 0, 1))
-			return CFrame.new(
-				position_pop(cursor) / scale,
-				position_pop(cursor) / scale,
-				position_pop(cursor) / scale,
-				q_x, q_y, q_z, w
-			)
+            local id = popu8(cursor)
+            local angles = id_to_rotation[id]
+            if angles then
+                return CFrame.new(
+                    position_pop(cursor) / scale,
+                    position_pop(cursor) / scale,
+                    position_pop(cursor) / scale
+                ) * angles
+            else
+                local q_x = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
+                local q_y = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
+                local q_z = math.map(popu16(cursor), 0, 2^16 - 1, -PI, PI)
+                local w = math.sqrt(1 - math.clamp(q_x * q_x + q_y * q_y + q_z * q_z, 0, 1))
+
+                return CFrame.new(
+                    position_pop(cursor) / scale,
+                    position_pop(cursor) / scale,
+                    position_pop(cursor) / scale,
+                    q_x, q_y, q_z, w
+                )
+            end
 		end,
 	}
 	
@@ -906,13 +1055,13 @@ local function cframe_descriptor(position_descriptor: Descriptor<number>, positi
 end
 
 local variant_descriptor_cache = {}
-local function variant_descriptor(variants: {[string]: Descriptor<any>}): Descriptor<{ kind: string, value: any }>
+local function variant_descriptor_hidden<T>(variants: T): Descriptor<T>
 	if variant_descriptor_cache then
 		return variant_descriptor_cache[variants]
 	end
 	
 	local literals: {string} = {}
-	for kind in variants do
+	for kind in variants :: {[string]: Descriptor<any>} do
 		table.insert(literals, kind)
 	end
 
@@ -924,14 +1073,14 @@ local function variant_descriptor(variants: {[string]: Descriptor<any>}): Descri
 			local kind = value.kind
 			local payload = value.value
 
-			local inner = variants[kind]
+			local inner = (variants :: {[string]: Descriptor<any>})[kind]
 			kind_push(cursor, kind)
 			inner.push(cursor, payload)
 		end,
 
 		pop = function(cursor)
 			local kind = kind_pop(cursor)
-			local inner = variants[kind]
+			local inner = (variants :: {[string]: Descriptor<any>})[kind]
 			local payload = inner.pop(cursor)
 
 			return {
@@ -946,10 +1095,14 @@ local function variant_descriptor(variants: {[string]: Descriptor<any>}): Descri
 	return descriptor
 end
 
-local bitmask_descriptor_cache = {}
-local function bitmask_descriptor(byte_count: number): Descriptor<{boolean}>
-	if bitmask_descriptor_cache[byte_count] then
-		return bitmask_descriptor_cache[byte_count]
+local function variant_descriptor<T>(variants: T): Descriptor<VariantTransformer<T>>
+    return variant_descriptor_hidden(variants)
+end
+
+local bitarray_descriptor_cache = {}
+local function bitarray_descriptor(byte_count: number): Descriptor<{boolean}>
+	if bitarray_descriptor_cache[byte_count] then
+		return bitarray_descriptor_cache[byte_count]
 	end
 	
 	local descriptor: Descriptor<{boolean}> = {
@@ -978,9 +1131,55 @@ local function bitmask_descriptor(byte_count: number): Descriptor<{boolean}>
 		end,
 	}
 	
-	bitmask_descriptor_cache[byte_count] = descriptor
+	bitarray_descriptor_cache[byte_count] = descriptor
 	
 	return descriptor
+end
+
+local set_descriptor_cache = {}
+local function set_descriptor<T>(set: {string}): Descriptor<EitherOr<T, {[string]: boolean?}>>
+    if set_descriptor_cache[set] then
+        return set_descriptor_cache[set]
+    end
+
+    local name_to_index = {}
+    for i, name in set :: {string} do
+        name_to_index[name] = i
+    end
+
+    local len = #set
+    local bitarray = bitarray_descriptor(math.ceil(len / 8))
+    local bitarray_push, bitarray_pop = bitarray.push, bitarray.pop
+
+    local descriptor: Descriptor<T> = {
+        push = function(cursor, value: {[string]: boolean?})
+            local bools = table.create(len, false)
+
+            for name, bool in value do
+                if bool == true then
+                    bools[name_to_index[name]] = true
+                end
+            end
+
+            bitarray_push(cursor, bools :: {boolean})
+        end,
+        pop = function(cursor)
+            local bools = bitarray_pop(cursor)
+            local result = {}
+
+            for i, name in set :: {string} do
+                if bools[i] == true then
+                    result[name] = true
+                end
+            end
+
+            return result
+        end,
+    }
+
+    set_descriptor_cache[set] = descriptor
+
+    return descriptor
 end
 
 local function T<T>(value: Descriptor<T>): T
@@ -1074,9 +1273,10 @@ return {
 	struct = struct_descriptor,
 	array = array_descriptor,
 	map = map_descriptor,
-	cframe_descriptor = cframe_descriptor,
-	variant_descriptor = variant_descriptor,
-	bitmask_descriptor = bitmask_descriptor,
+	cframe = cframe_descriptor,
+	variant = variant_descriptor,
+	bitarray = bitarray_descriptor,
+    set = set_descriptor,
 	
 	T = T
 }
