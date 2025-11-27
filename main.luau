@@ -970,7 +970,7 @@ local function bitmask_descriptor(byte_count: number): Descriptor<{boolean}>
 				for j = 0, 7 do
 					if bit32.band(bit32.rshift(byte, j), 1) == 1 then
 						local index = i * 8 + j + 1
-						result[i + j + 1] = true
+						result[index] = true
 					end
 				end
 			end
