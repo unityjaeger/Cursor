@@ -1,0 +1,54 @@
+---
+title: Intro
+description: Introduction to the library.
+---
+
+## Why care?
+Games often need to send large amounts of data over the network, the more you know about the shape of the data ahead of time, the smaller ayou can make it.
+
+Common places where you serialize/deserialize data:
+- Animations
+- Physics
+- Movement
+- Player Data
+- Visual Effects
+
+Even small savings per event call add up quickly when they're happening multiple times a second.
+
+## Buffer problems
+
+The 'buffer' API is powerful and low-level, this also means:
+- you have to manually track buffer sizes
+- you have to keep track of the current offset
+- you have to be extra careful about the order in which you write and read data
+- anything slightly fancy (structs with optional fields, custom integer sizes like 24-bit integers) turns into a lot of boilerplate
+
+The result is often:
+- verbose code that's hard to read at a glance
+- code that's scary to refactor because one wrong offset can break everything
+- subtle bugs when the write/read order gets out of sync
+
+## What Scrivener does
+
+Scrivener gives you higher-level tools on top of the buffer API, while still maintaining good performance. It offers:
+- Cursors that turn a buffer into a simple write queue / read queue
+- Codecs, which are small obejcts that know how to write and read a specific type
+
+A codec in Scrivener is just a pair of functions:
+
+```luau
+type Codec<T> = {
+    write: (cursor: WriteCursor, value: T) -> (),
+    read: (cursor: ReadCursor) -> T,
+}
+```
+
+Once you have a codec for a type, you can:
+- reuse it everywhere you need that type
+- compose it into more complex codecs (arrays, maps, structs, etc.)
+
+Scrivener:
+- supports all commonly used, serialize Luau/Roblox types
+- lets you define your own codecs for custom types with easy, which you can then plug into arrays, structs, maps and other composite codecs like any built-in type
+
+If a type isn't support yet, you can implement a codec for it once and immediatly gain all the same ergonomics and composition the rest of the library has.

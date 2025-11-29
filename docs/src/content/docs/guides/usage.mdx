@@ -1,0 +1,632 @@
+---
+title: Usage
+description: Describes how to make use of types.
+---
+
+## Cursors
+Luau buffers are statically sized. If you want to write multiple values in succession, you normally have two options:
+
+1. Pre-compute the total size and create a buffer with exactly that many bytes, or
+2. Start with a small buffer and when you run out of space, allocate a new buffer and copy everything over to the new buffer
+
+Scrivener takes a different approach: it uses cursors along with a large reserved buffer.
+
+A cursor treats a buffer like a dynamically sized queue. Internally Scrivener writes into one large reserved buffer and keeps track of the write position. When you're done writing values to the cursor, you call 'finalize', which:
+- creates a new buffer of exactly the required size, and
+- copies the written range from the reserved buffer into that new buffer
+
+(shoutout to [Sera](https://github.com/MadStudioRoblox/Sera) for this pattern)
+
+There are two cursor types:
+- WriteCursor -> used when writing values
+- ReadCursor -> used when reading values
+
+Because both cursors are treated like queues, FIFO (first-in, first-out) applies:
+you read values the same order you wrote them in. This makes the order of operations explicit and easy to understand.
+
+:::caution
+Due to this approach, you can't write into 2 cursors at the same time. You need to either:
+1. use the 'global_offset' parameter when creating a WriteCursor, to write farther into the reserved buffer so the writes dont interfere with one another, or
+2. finish writing one cursor before starting to write the next
+::: 
+
+---
+
+## Core Usage
+There are two main ways to use Scrivener and they are not mutually exclusive, they just have different applications:
+
+1. Raw write/read functions - low-level wrappers over 'buffer.*' with extra non-vanilla types
+2. Codecs - reusable serializers you can compose into arrays, structs, maps, etc.
+
+Raw write/read functions were the original scope of this library. Codecs came later to handle more complex shapes nicely and compactly.
+
+### Raw write/read
+
+For every supported static datatype, Scrivener eports 'writeX' / 'readX' functions directly.
+
+#### Example
+```luau
+local writer = scrivener.write_cursor()
+
+scrivener.writeu8(writer, 42)
+scrivener.writef32(writer, 0.5)
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(scrivener.readu8(reader)) --> 42
+print(scrivener.readf32(reader)) --> 0.5
+```
+
+This is the closet to using 'buffer.writeX' / 'buffer.readX' directly, but you don't have to juggle offsets or buffer sizes.
+
+### Codecs
+
+Codecs are small objects that know how to write and read a specific type.
+Conceptually, a codec is a (serialize, deserialize) pair.
+
+```luau
+type Codec<T> = {
+    write: (cursor: WriteCursor, value: T) -> (),
+    read: (cursor: ReadCursor) -> T
+}
+```
+
+There are two kinds of codecs:
+- Primitive codecs -> fixed types like 'u8', 'string', 'bool', etc.
+- Composite codecs -> codecs that are built from other codecs like 'array', 'struct', 'map', etc.
+
+A primitive codec always encodes the same shape (e.g. 'u8' is always a single byte and a number).
+The equivalent primitive codec to a write/read function is simply the part after write/read, so the codec for 'writestring' would be 'string'.
+
+A composite codec needs parameters to know what to encode (e.g. 'array' needs a codec for the element).
+
+The primitive codecs mainly exist to make the composite codecs nicer to work with. Without them you'd have to pass both a write and a read function everywhere, which gets messy quickly especially for composite codecs that take a table schema.
+
+:::note
+Primitive codecs are just tables that have a 'write' and 'read' key. The values are the equivalent write and read functions. Meaning that u8.write equals writeu8 for example.
+:::
+
+:::caution
+All composite codecs have a cache so that the codec doesn't need to be constructed again with the same parameters, however its important to note that the caching is done based on identity, this mostly only matters for tables.
+
+This means:
+- If you call a codec constructor with the same table instance, you get the same codec back
+- If you pass a new table with the same content, you will get a new codec back
+
+```luau
+local u8 = scrivener.u8
+local shape = {field = u8}
+print(scrivener.struct(shape)        == scrivener.struct(shape))        --> true
+print(scrivener.struct({field = u8}) == scrivener.struct({field = u8})) --> false
+print(scrivener.struct(shape)        == scrivener.struct({field = u8})) --> false
+```
+:::
+
+---
+
+## Numbers
+
+Scrivener uses the same naming scheme as Roblox's buffer API:
+
+- u8 -> unsigned 8-bit integer (1 byte)
+- i16 -> signed 16-bit integer (2 bytes)
+- f32 -> 32-bit floating point number (4 bytes)
+- etc.
+
+Scrivener supports signed and unsigned integers that use between 1 and 7 bytes.
+
+Luau only has one numeric type (number), which is a 64-bit IEEE-754 floating point value. In this format, integers are only exactly representable up to 2^53−1. That’s 53 bits of integer precision, which is a bit less than the full 7-byte (56-bit) range.
+
+Because of this, Scrivener caps its integer formats at 53 bits (u53 / i53). Anything larger could not be safely round-tripped through a Luau number without losing precision.
+
+### Unsigned Integers
+Unsigned Integers are (mathematically) whole numbers.
+
+|Codec|Bytes|Min|Max|
+|---|---|---|---|
+|u8|1|0|255|
+|u16|2|0|65 535|
+|u24|3|0|16 777 215|
+|u32|4|0|4 294 967 295|
+|u53|7|0|9 007 199 254 740 991|
+
+Example:
+```luau
+local writer = scrivener.write_cursor()
+
+scrivener.writeu8(writer, 42)
+scrivener.u32.write(writer, 1000)
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(scrivener.readu8(reader)) --> 42
+print(scrivener.u32.read(reader)) --> 1000
+```
+
+---
+
+### Signed Integers
+Signed Integers are (mathematically) integers.
+
+|Codec|Bytes|Min|Max|
+|---|---|---|---|
+|i8|1|-128|127|
+|i16|2|−32 768|32 767|
+|i24|3|−8 388 608|8 388 607|
+|i32|4|−2 147 483 648|2 147 483 647|
+|i53|7|−4 503 599 627 370 496|4 503 599 627 370 495|
+
+Example:
+```luau
+local writer = scrivener.write_cursor()
+
+scrivener.writei8(writer, -100)
+scrivener.i32.write(writer, 0)
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(scrivener.readi8(reader)) --> -100
+print(scrivener.i32.read(reader)) --> 0
+```
+
+---
+
+### Floating Point
+|Codec|Bits|Approx. Range|Notes|
+|---|---|---|---|
+|f16|16|~±6.55 x 10^4|half precision|
+|f32|32|~±3.40 x 10^38|single precision|
+|f64|64|~±1.79 x 10^308|double precision|
+
+As mentioned earlier, all luau numbers are 64-bit IEEE-754 floating point numbers (known as doubles).
+
+You don't necessarily need to know the full details on how floats are stored internally. The two important points are:
+1. Only a finite set of values is representable -> you can't store every real number, many numbers are rounded to the closest representable float.
+2. The spacing between representable values grows as numbers get larger -> close to zero you get very fine steps, far away from zero the steps are much larger.
+
+#### Value vs Precision
+half precision (f16) is a good format to show this effect. Around small values it's quite precise, at large values the smallest step it can represent becomes big.
+
+|Approx. value|Smallest step|
+|---|---|
+|256|0.25|
+|512|0.5|
+|1024|1|
+|2048|2|
+|4096|4|
+
+---
+
+### Variable Length Quantities
+
+Instead of always using a fixed number of bytes, a VLQ uses 1-8 bytes depending on the value.
+
+Each byte stores 7 bits of the value, this means you only have half the range to work with. 1 bit is used as a continuation flag, it indicates if this is the last byte that is being read.
+
+This means that a vlq is only as large as it needs to be to hold the value.
+
+#### Size examples (unsigned)
+|Value|Bytes Used|
+|---|---|
+|127|1|
+|128|2|
+|16383|2|
+|16384|3|
+
+VLQs are ideal for fields that are usually small, but occasionally have large numbers like IDs, counts or lengths mixed in.
+
+Scrivener supports both unsigned and signed VLQs:
+- an unsigned VLQ has half the range of an unsigned integer of the same size 
+- a signed VLQ has half the range of a signed integer of the same size
+(both due to the continuation bit)
+
+#### Example
+```luau
+local writer = scrivener.write_cursor()
+
+scrivener.writevlq(writer, 100) --will take up 1 byte
+scrivener.writesvlq(writer, -100) --signed variant, will take up 2 bytes
+scrivener.vlq.write(writer, 1000000)
+scrivener.svlq.write(writer, -500000)
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(scrivener.readvlq(reader)) --> 100
+print(scrivener.readsvlq(reader)) --> -100
+print(scrivener.vlq.read(reader)) --> 1000000
+print(scrivener.svlq.read(reader)) --> -500000
+```
+
+---
+
+## Optionals
+Optionals are used to make a value optional, at the cost of an extra byte to store if the value is present or not.
+
+They are a bit special because they break the common pattern that write/read functions follow.
+
+### Example
+Example:
+```luau
+local writer = scrivener.write_cursor()
+scrivener.writeopt(cursor, writeu8, 100)
+scrivener.writeopt(cursor, u8.write, nil)
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(scrivener.readopt(reader, readu8)) --> 100
+print(scrivener.readopt(reader, u8.read)) --> nil
+```
+
+### Speciality of the codec
+The codec of optionals is also a composite codec instead of a primitive constructor, it wraps around another codec and gets rid of the need to pass a read/write method as a paremeter.
+
+#### Example
+```luau
+local opt_u8 = opt(u8)
+
+local writer = scrivener.write_cursor()
+scrivener.opt_u8.write(writer, 100)
+scrivener.opt_u8.write(writer, nil)
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(scrivener.opt_u8.read(reader)) --> 100
+print(scrivener.opt_u8.read(reader)) --> nil
+```
+
+---
+
+## Booleans
+Booleans only need a single bit of data to represent their state, which is why you can pack 8 booleans into a single byte.
+
+### Example
+```luau
+local writer = scrivener.write_cursor()
+scrivener.writebool(writer, true, true, false, false, true)
+scrivener.bool.write(writer, false, true)
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(scrivener.readbool(reader)) --> true, true, false, false, true, false, false, false
+print(scrivener.bool.read(reader)) --> false, true, false, false, false, false, false, false
+```
+
+:::caution
+Reading a bool will always result in 8 booleans being returned as a tuple, don't rely on the number of input booleans matching the number of output booleans
+:::
+
+### Simple booleans
+There is also an alternative boolean type for use in mainly composite codecs, where it's expected that the primitive codec writes and reads a non-tuple. This type uses a byte and can not write/read multiple booleans at the same time.
+
+#### Example
+```luau
+local writer = scrivener.write_cursor()
+scrivener.writebool_simple(writer, true)
+scrivener.bool_simple.write(writer, false)
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(scrivener.readbool_simple(reader)) --> true
+print(scrivener.bool_simple.read(reader)) --> false
+```
+
+---
+
+## Strings
+The provided methods are thin wrappers over the buffer string methods, they handle length prefixes and copying for you.
+
+### Example
+```luau
+local writer = scrivener.write_cursor()
+scrivener.writestring(writer, "abc")
+scrivener.string.write(writer, "abcdef")
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(scrivener.readstring(reader)) --> "abc"
+print(scrivener.string.read(reader)) --> "abcdef"
+```
+
+---
+
+## Buffers
+Buffer support lets you embed your own buffers inside a Scrivener queue. THe methods are basically just wrappers over 'buffer.copy'.
+
+### Example
+```luau
+local some_buffer = buffer.create(10)
+local some_buffer2 = buffer.create(100)
+
+local writer = scrivener.write_cursor()
+scrivener.writebuffer(writer, some_buffer)
+scrivener.buffer.write(writer, some_buffer2)
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+scrivener.readbuffer(reader) --> some_buffer
+scrivener.buffer.read(reader) --> some_buffer2
+```
+
+---
+
+## Color3s
+Color3 values can be stored in 3 bytes because the individual components of RGB fall perfectly into the 'u8' range (0 - 255).
+
+### Example
+```luau
+local writer = scrivener.write_cursor()
+scrivener.writecolor3(writer, Color3.new(1, 0, 1))
+scrivener.color3.write(writer, Color3.fromRGB(0, 255, 0))
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(scrivener.readcolor3(reader)) --> 1, 0, 1
+print(scrivener.color3.read(reader)) --> 0, 1, 0
+```
+
+---
+
+## Vector3s
+```luau
+function vector3(number_codec: Codec<number>): Codec<Vector3>
+```
+
+The codec returned by 'vector3' uses the provided 'number_codec' for each axis of the Vector3 (X, Y, Z). This lets you trade precision vs. size.
+
+### Example
+```luau
+local vec = scrivener.vector3(f32)
+
+local writer = scrivener.write_cursor()
+vec.write(writer, Vector3.one)
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(vec.read(reader)) --> 1, 1, 1
+```
+
+---
+
+## CFrames
+```luau
+function cframe(position_codec: Codec<number>, position_scale: number?): Codec<CFrame>
+```
+
+Similarly to 'vector3', the 'cframe' codec needs a 'position_codec' for the individual axes of the 'Position' of the 'CFrame'.
+
+There is also an optional 'position_scale' argument that will multiply the 'Position' by the 'position_scale' during a write and divide the 'Position' by 'position_scale' during a read.
+This is useful for non-floating point position codecs, as you can get custom decimal precision for the 'Position' this way.
+
+---
+
+### Example
+```luau
+local cf = scrivener.cframe(f32)
+local cf_with_scale = scrivener.cframe(i24, 100)
+
+local writer = scrivener.write_cursor()
+cf.write(writer, CFrame.new(100, -100, 0))
+cf_with_scale.write(writer, CFrame.new(99.99, 0, -50))
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(cf.read(reader)) --> 100, -100, 0, ...
+print(cf_with_scale.read(reader)) --> 99.99, 0, -50, ...
+```
+
+---
+
+## Literals
+```luau
+function literal<T>(literals: {T}): Codec<T>
+```
+A 'literal' codec encodes one of a fixed set of values using a single byte index. This is mainly useful for unique identifiers or small enums of names.
+
+### Example
+```luau
+local enums = scrivener.literal({"Idle", "Running", "Jumping"})
+
+local writer = scrivener.write_cursor()
+enums.write(writer, "Idle")
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(enums.read(reader)) --> "Idle"
+```
+
+:::tip
+If you want to only use string literals and would like better autocomplete, consider casting the returned codec like so:
+```luau
+local enums = literal({"Idle", "Running", "Jumping"}) :: scrivener.Codec<"Idle" | "Running" | "Jumping">
+```
+Unfortunately there is no way to support this in the library itself because string values in arrays dont produce singleton types.
+:::
+
+---
+
+## Arrays
+```luau
+function array<T>(element_codec: Codec<T>): Codec<{T}>
+```
+
+'array' produces a codec for the classic table type ```{T}```.
+It serializes a list of elements using the provided 'element_codec'.
+
+### Example
+```luau
+local arr = scrivener.array(u32)
+
+local writer = scrivener.write_cursor()
+arr.write(writer, {1, 2, 3, 4, 5})
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(arr.read(reader)) --> {1, 2, 3, 4, 5}
+```
+
+---
+
+## Bitarrays
+```luau
+function bitarray(byte_count: number): Codec<{boolean}>
+```
+
+'bitarray' is basically a wrapper over 'bool' to allow for more than 8 booleans at a time while also using tables instead of tuples.
+
+The same rules apply here as for 'bool', this means that you always get an array with byte_count * 8 booleans in it.
+
+### Example
+```luau
+local bitarr = scrivener.bitarray(2) --16 booleans
+
+local writer = scrivener.write_cursor()
+bitarr.write(writer, {true, false, true, false, true})
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(bitarr.read(reader)) --> {true, false, true, false, true, false, false, false, ..., [16] = false}
+```
+
+---
+
+## Sets
+```luau
+function set(set: {string}): Codec<{[string]: boolean?}>
+```
+
+'set' is a higher-level version of bitmask, where named flags get packed into bits.
+You work with a table of booleans keyed by flag name.
+
+### Example
+```luau
+local permissions = scrivener.set({"CanEdit", "CanDelete", "IsAdmin"})
+
+local writer = scrivener.write_cursor()
+permissions.write(writer, {
+    CanEdit = true,
+    CanDelete = false,
+    IsAdmin = false
+})
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(permissions.read(reader)) --> {CanEdit = true}
+```
+
+:::note
+false flags get treated as nil during reading for faster read speeds.
+:::
+
+If you want better types for write/read instead of just ```{[string]: boolean?}``` you can cast the returned codec like so:
+```luau
+local permissions = scrivener.set({"CanEdit", "CanDelete", "IsAdmin"}) :: scrivener.SetTransformer<"CanEdit" | "CanDelete" | "IsAdmin">
+--resulting write/read value type: {CanEdit: boolean?, CanDelete: boolean?, IsAdmin: boolean?}
+```
+
+---
+
+## Maps
+```luau
+function map<K, V>(key_codec: Codec<K>, value_codec: Codec<V>): Codec<{[K]: V}>
+```
+
+'map' encodes a table that maps keys of type K to values of type V, using the provided key and value codecs.
+
+### Example
+```luau
+local apples = scrivener.map(string, u8)
+
+local writer = scrivener.write_cursor()
+apples.write(writer, {
+    John = 10,
+    Bob = 0
+})
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(apples.read(reader)) --> {John = 10, Bob = 0}
+```
+
+---
+
+## Structs
+```luau
+function struct(schema: {[string]: Codec<any>}): Codec<{[string]: any}>
+```
+
+'struct' maps constant string fields to specific value types, since we know the fields ahead of time and they never change, they don't need to be serialized. Only the values are written and read, which saves space and keeps the format stable.
+
+### Example
+```luau
+local data = scrivener.struct{[
+    name = string,
+    age = u8,
+    some_array = array(f32)
+]}
+
+local writer = scrivener.write_cursor()
+data.write({
+    name = "John",
+    age = 20,
+    some_array = {5.5, 0, -2}
+})
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(data.read(reader)) --> {name = "John", age = 20, some_array = {5.5, 0, -2}}
+```
+
+### Optional structs
+Structs can also contain optional fields, but these need to be declared differently from normal optional codecs.
+To mark a field as optional, wrap the value in 'mark_opt' like so:
+```luau
+local data = scrivener.struct{[
+    name = mark_opt(string),
+    age = u8,
+    some_array = mark_opt(array(f32))
+]}
+```
+
+---
+
+## Variants
+```luau
+function variant(variants: {[string]: Codec<any>}): Codec<{kind: string, value: any}>
+```
+
+A 'variant' is a tagged union: a fixed set of possible cases, each with its own payload.
+
+Example:
+```luau
+local choice = scrivener.variant({
+    a = u8,
+    b = string
+})
+
+local writer = scrivener.write_cursor()
+choice.write(writer, {kind = "a", value = 100})
+
+local result = scrivener.finalize(writer)
+
+local reader = scrivener.read_cursor(result)
+print(choice.read(reader)) --> {kind = "a", value = 100}
+```

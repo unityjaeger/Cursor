@@ -1,0 +1,30 @@
+---
+title: Scrivener
+description: A simple yet powerful 
+template: splash # Remove or comment out this line to display the site sidebar on this page.
+hero:
+  tagline: A simple yet powerful serialization/deserialization library
+  image:
+    file: ../../assets/houston.webp
+  actions:
+    - text: Get Started
+      link: /guides/intro/
+      icon: right-arrow
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+	<Card title="Efficient" icon="pencil">
+		Practically just a thin wrapper over the buffer API.
+	</Card>
+	<Card title="Composable" icon="document">
+		Compose different types together for whatever data you need.
+	</Card>
+	<Card title="Custom Types" icon="add-document">
+		Easily write custom types without needing to know a lot about the internals of the library.
+	</Card>
+	<Card title="New Solver focused" icon="setting">
+		Makes use of the new solver to get luau types that weren't possible before.
+	</Card>
+</CardGrid>

@@ -1,0 +1,117 @@
+---
+title: Examples
+description: Further examples to show how the library can be used.
+---
+
+All codecs can be nested, here are some examples of that
+
+## Example 1: Player Save Data
+### Codec
+```luau
+local s = require(replicated_storage.scrivener)
+
+local permissions = s.set({"BetaAccess", "IsModerator", "CanTrade"}) :: s.SetTransformer<"BetaAccess" | "IsModerator" | "CanTrade">
+
+local rarity = s.literal({"Common", "Rare", "Epic", "Legendary"}) :: s.Codec<"Common" | "Rare" | "Epic" | "Legendary">
+
+local player = s.struct({
+	user_id = s.u53,
+	level = s.u16,
+	permissions = permissions,
+	inventory = s.array(s.struct({
+		id = s.u32,
+		rarity = rarity,
+		quantity = s.u16
+	}))
+})
+
+local save_file = s.struct({
+	version = s.u8,
+	players = s.map(s.u53, player)
+})
+```
+### Write/Read
+```luau
+local writer = s.write_cursor()
+
+save_file.write(writer, {
+	version = 1,
+	players = {
+		[123456] = {
+			user_id = 123456,
+			level = 10,
+			inventory = {
+				{id = 1, rarity = "Common", quantity = 1},
+				{id = 2, rarity = "Rare", quantity = 3}
+			},
+			permissions = {
+				BetaAccess = true,
+				CanTrade = true
+			}
+		}
+	}
+})
+
+local result = s.finalize(writer)
+local reader = s.read_cursor(result)
+print(save_file.read(reader))
+```
+
+## Example 2: World Chunk Data
+### Codec
+```luau
+local cell = s.struct({
+	offset = s.vector3(s.i16),
+	tile = s.variant({
+		grass = s.struct({
+			moisture = s.u8
+		}),
+		water = s.struct({
+			depth = s.u8
+		}),
+		lava = s.struct({
+			temperature = s.u16
+		})
+	}),
+	objects = s.array(s.struct({
+		id = s.u16,
+		color = s.color3
+	}))
+})
+
+local chunk = s.struct({
+	size_x = s.u8,
+	size_y = s.u8,
+	origin = s.vector3(s.f32),
+	cells = s.array(cell)
+})
+```
+### Write/Read
+```luau
+local writer = s.write_cursor()
+
+chunk.write(writer, {
+	size_x = 5,
+	size_y = 10,
+	origin = Vector3.new(500, 0, 500),
+	cells = {
+		{
+			offset = Vector3.new(10, 50, -10),
+			tile = {kind = "grass", value = {moisture = 50}},
+			objects = {}
+		},
+		{
+			offset = Vector3.new(50, -50, 10),
+			tile = {kind = "lava", value = { temperature = 1000 }},
+			objects = {
+				{id = 1, color = Color3.new(1, 1, 0)},
+				{id = 2, color = Color3.new(0, 0, 0)}
+			}
+		}
+	}
+})
+
+local result = s.finalize(writer)
+local reader = s.read_cursor(result)
+print(chunk.read(reader))
+```

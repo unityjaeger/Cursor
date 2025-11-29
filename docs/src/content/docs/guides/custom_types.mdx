@@ -1,0 +1,100 @@
+---
+title: Custom Types
+description: Explains how to make custom descriptors.
+---
+
+## Intro
+To make a custom type you need to write a codec that follows this type:
+```luau
+type Codec<T> = {
+    write: (cursor: WriteCursor, value: T) -> (),
+    read: (cursor: ReadCursor) -> T,
+}
+```
+
+A codec is just the logic for:
+- how to encode a value of type T into a cursor, and
+- how to decode a value of type T from a cursor again
+
+You can do this in two ways:
+1. by composing existing Scrivener functions/codecs (recommended when possible)
+2. by writing directly into the reserved buffer yourself for full control, or for when performance is critical
+
+## Accessing the reserved buffer
+The write function needs access to the reserved buffer that Scrivener uses, you can get it with:
+```luau
+local reserved_buffer = scrivener.get_reserved_buffer()
+```
+
+This gives you the big shared buffer that all writes go into. When you write manually, you:
+1. write bytes into 'reserved_buffer' at the cursor's current position
+2. advance the cursor by the number of bytes you wrote
+
+Scrivener's own 'write*' functions do exactly this under the hood.
+
+## Writing manually
+When you talk directly to the 'buffer' API, you need to move the cursor position too. The standard pattern in a custom codec implementation looks like this:
+```luau
+--don't call get_reserved_buffer inside the write methods so its faster
+local reserved_buffer = scrivener.get_reserved_buffer()
+local vector2: scrivener.Codec<Vector2> = {
+    write = function(cursor: scrivener.WriteCursor, value: Vector2)
+        buffer.writef32(reserved_buffer, cursor.pos, value.X)
+        cursor.pos += 4
+        buffer.writef32(reserved_buffer, cursor.pos, value.Y)
+        cursor.pos += 4
+    end,
+    read = function(cursor: scrivener.ReadCursor): Vector2
+        local X = buffer.readf32(cursor.buff, cursor.pos)
+        cursor.pos += 4
+        local Y = buffer.readf32(cursor.buff, cursor.pos)
+        cursor.pos += 4
+        return Vector2.new(X, Y)
+    end
+}
+```
+
+## Writing with existing codecs
+You don't need to advance the cursor position if you use existing Scrivener functions and codecs.
+
+The same Vector2 example from above can also look like this:
+```luau
+local vector2: scrivener.Codec<Vector2> = {
+    write = function(cursor: scrivener.WriteCursor, value: Vector2)
+        scrivener.writef32(cursor, value.X)
+        scrivener.writef32(cursor, value.Y)
+    end,
+    read = function(cursor: scrivener.ReadCursor): Vector2
+        return Vector2.new(
+            scrivener.readf32(cursor),
+            scrivener.readf32(cursor)
+        )
+    end
+}
+```
+
+You could also make a composite Vector2 codec like this:
+```luau
+local function vector2(number_codec: scrivener.Codec<number>): scrivener.Codec<Vector2>
+    return {
+        write = function(cursor: scrivener.WriteCursor, value: Vector2)
+            number_codec.write(cursor, value.X)
+            number_codec.write(cursor, value.Y)
+        end,
+        read = function(cursor: scrivener.ReadCursor): Vector2
+            return Vector2.new(
+                number_codec.read(cursor),
+                number_codec.read(cursor)
+            )
+        end
+    }
+end
+```
+
+:::caution
+Cursors are queues, they always operate on "whatever comes next" in the buffer and then move forward.
+
+That means:
+- 'write' must always write fields in a fixed order, and
+- 'read' must read them back in the same order, with the same sizes
+::: 
