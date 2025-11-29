@@ -5,7 +5,7 @@ import starlight from '@astrojs/starlight';
 // https://astro.build/config
 export default defineConfig({
 	site: "https://unityjaeger.github.io",
-	base: "/Scrivener",
+	base: "/Scrivener/",
 	integrations: [
 		starlight({
 			title: 'Scrivener',
@@ -15,7 +15,6 @@ export default defineConfig({
 				{
 					label: 'Guides',
 					items: [
-						// Each item here is one entry in the navigation menu.
 						{ label: 'Intro', slug: 'guides/intro' },
 						{ label: 'Usage', slug: 'guides/usage' },
 						{ label: 'Examples', slug: 'guides/examples' },
