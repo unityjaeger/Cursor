@@ -380,20 +380,18 @@ end
 local f16_lut = {}
 do
 	for value = 0, 2 ^ 16 - 1 do
-		local result
-		
 		local banded = bit32.band(value, 0x7C00)
 		if value == 0 then
-			result = (bit32.band(value, 0x8000) ~= 0) and -0 or 0
+			f16_lut[value] = (bit32.band(value, 0x8000) ~= 0) and -0 or 0
 			continue
 		elseif value == 0x7C00 then
-			result = math.huge
+			f16_lut[value] = math.huge
 			continue
 		elseif value == 0xFC00 then
-			result = -math.huge
+			f16_lut[value] = -math.huge
 			continue
 		elseif (banded == 0x7C00) and (bit32.band(value, 0x03FF) ~= 0) then
-			result = 0/0
+			f16_lut[value] = 0/0
 			continue
 		end
 
@@ -402,12 +400,10 @@ do
 		local fraction = bit32.band(value, 0x03FF) / 1024
 
 		if exponent == 0 then
-			result = sign * math.ldexp(fraction, -14)
+			f16_lut[value] = sign * math.ldexp(fraction, -14)
 		else
-			result = sign * math.ldexp(1 + fraction, exponent - 15)
+			f16_lut[value] = sign * math.ldexp(1 + fraction, exponent - 15)
 		end
-
-		f16_lut[value] = result
 	end
 end
 
