@@ -116,125 +116,6 @@ type function VariantTransformer(t: type)
 	return intersect :: any
 end
 
-local function writei24_helper(buff: buffer, offset: number, value: number): ()
-	if value < 0 then
-		value = value + 16777216
-	end
-	buffer.writeu16(buff, offset, value / 256)
-	buffer.writeu8(buff, offset + 2, value)
-end
-
-local function readi24_helper(buff: buffer, offset: number): number
-	local value = 256 * buffer.readu16(buff, offset) + buffer.readu8(buff, offset + 2)
-	if value >= 8388608 then
-		return value - 16777216
-	end
-	return value
-end
-
-local function writeu24_helper(buff: buffer, offset: number, value: number): ()
-	buffer.writeu16(buff, offset, value / 256)
-	buffer.writeu8(buff, offset + 2, value)
-end
-
-local function readu24_helper(buff: buffer, offset: number): number
-	return 256 * buffer.readu16(buff, offset) + buffer.readu8(buff, offset + 2)
-end
-
-local function writeu53_helper(buff: buffer, offset: number, value: number): ()
-	buffer.writeu32(buff, offset, value / 16777216)
-	writeu24_helper(buff, offset + 4, value)
-end
-
-local function readu53_helper(buff: buffer, offset: number): number
-	return 16777216 * buffer.readu32(buff, offset) + readu24_helper(buff, offset + 4)
-end
-
-local function writei53_helper(buff: buffer, offset: number, value: number): ()
-	if value < 0 then
-		value = value + 9007199254740992
-	end
-	buffer.writeu32(buff, offset, value / 16777216)
-	writeu24_helper(buff, offset + 4, value)
-end
-
-local function readi53_helper(buff: buffer, offset: number): number
-	local value = 16777216 * buffer.readu32(buff, offset) + readu24_helper(buff, offset + 4)
-	if value >= 4503599627370496 then
-		value = value - 9007199254740992
-	end
-	return value
-end
-
-local function writef16_helper(buff: buffer, offset: number, value: number): ()
-	if value ~= value then
-		buffer.writeu16(buff, offset, 0x7E01)
-		return
-	elseif value == 0 then
-		buffer.writeu16(buff, offset, 0x0000)
-		return
-	end
-
-	local sign = 0
-	if value < 0 then
-		sign = 0x8000
-		value = -value
-	end
-
-	if value > 65504 then
-		buffer.writeu16(buff, offset, bit32.bor(sign, 0x7C00))
-		return
-	end
-
-	local fraction, exponent = math.frexp(value)
-	if exponent < -13 then
-		fraction = fraction * math.ldexp(1, exponent + 13)
-		exponent = 0
-	else
-		exponent = exponent + 14
-		fraction = (fraction * 2 - 1)
-	end
-
-	buffer.writeu16(buff, offset, bit32.bor(
-		sign,
-		bit32.lshift(exponent, 10),
-		fraction * 1024
-		))
-end
-
-local function readf16_helper(buff: buffer, offset: number): number
-	local value = buffer.readu16(buff, offset)
-
-	local banded = bit32.band(value, 0x7C00)
-	if value == 0 then
-		return (bit32.band(value, 0x8000) ~= 0) and -0 or 0
-	elseif value == 0x7C00 then
-		return math.huge
-	elseif value == 0xFC00 then
-		return -math.huge
-	elseif (banded == 0x7C00) and (bit32.band(value, 0x03FF) ~= 0) then
-		return 0/0
-	end
-
-	local sign = bit32.band(value, 0x8000) == 0 and 1 or -1
-	local exponent = bit32.rshift(banded, 10)
-	local fraction = bit32.band(value, 0x03FF) / 1024
-
-	if exponent == 0 then
-		return sign * math.ldexp(fraction, -14)
-	else
-		return sign * math.ldexp(1 + fraction, exponent - 15)
-	end
-end
-
-local function inverse_table<T>(tbl: {T}): {[T]: number}
-	local inverse = {}
-	for i, v in tbl do
-		inverse[v] = i
-	end
-	return inverse
-end
-
 local function write_cursor(global_offset: number?): WriteCursor
 	return {
 		pos = global_offset or 0,
@@ -274,8 +155,13 @@ local function writeu16(cursor: WriteCursor, value: number)
 end
 
 local function writeu24(cursor: WriteCursor, value: number)
-	writeu24_helper(RESERVED_BUFFER, cursor.pos, value)
-	cursor.pos += 3
+	local pos = cursor.pos
+
+	buffer.writeu16(RESERVED_BUFFER, pos, value / 2^8)
+	pos += 2
+
+	buffer.writeu8(RESERVED_BUFFER, pos, value)
+	cursor.pos = pos + 1
 end
 
 local function writeu32(cursor: WriteCursor, value: number)
@@ -284,8 +170,16 @@ local function writeu32(cursor: WriteCursor, value: number)
 end
 
 local function writeu53(cursor: WriteCursor, value: number)
-	writeu53_helper(RESERVED_BUFFER, cursor.pos, value)
-	cursor.pos += 7
+	local pos = cursor.pos
+
+	buffer.writeu32(RESERVED_BUFFER, pos, value / 2^24)
+	pos += 4
+
+	buffer.writeu16(RESERVED_BUFFER, pos, value / 2^8)
+	pos += 2
+
+	buffer.writeu8(RESERVED_BUFFER, pos, value)
+	cursor.pos = pos + 1
 end
 
 local function readu8(cursor: ReadCursor): number
@@ -301,8 +195,14 @@ local function readu16(cursor: ReadCursor): number
 end
 
 local function readu24(cursor: ReadCursor): number
-	local value = readu24_helper(cursor.buff, cursor.pos)
-	cursor.pos += 3
+	local buff, pos = cursor.buff, cursor.pos
+
+	local value = 2^8 * buffer.readu16(buff, pos)
+	pos += 2
+
+	value += buffer.readu8(buff, pos)
+	cursor.pos = pos + 1
+
 	return value
 end
 
@@ -313,8 +213,17 @@ local function readu32(cursor: ReadCursor): number
 end
 
 local function readu53(cursor: ReadCursor): number
-	local value = readu53_helper(cursor.buff, cursor.pos)
-	cursor.pos += 7
+	local buff, pos = cursor.buff, cursor.pos
+
+	local value = 2^24 * buffer.readu32(buff, pos)
+	pos += 4
+
+	value += 2^8 * buffer.readu16(buff, pos)
+	pos += 2
+
+	value += buffer.readu8(buff, pos)
+	cursor.pos = pos + 1
+
 	return value
 end
 
@@ -329,8 +238,17 @@ local function writei16(cursor: WriteCursor, value: number)
 end
 
 local function writei24(cursor: WriteCursor, value: number)
-	writei24_helper(RESERVED_BUFFER, cursor.pos, value)
-	cursor.pos += 3
+	if value < 0 then
+		value += 2^24
+	end
+
+	local pos = cursor.pos
+
+	buffer.writeu16(RESERVED_BUFFER, pos, value / 2^8)
+	pos += 2
+
+	buffer.writeu8(RESERVED_BUFFER, pos, value)
+	cursor.pos = pos + 1
 end
 
 local function writei32(cursor: WriteCursor, value: number)
@@ -339,8 +257,20 @@ local function writei32(cursor: WriteCursor, value: number)
 end
 
 local function writei53(cursor: WriteCursor, value: number)
-	writei53_helper(RESERVED_BUFFER, cursor.pos, value)
-	cursor.pos += 7
+	if value < 0 then
+		value += 2^53
+	end
+
+	local pos = cursor.pos
+
+	buffer.writeu32(RESERVED_BUFFER, pos, value / 2^24)
+	pos += 4
+
+	buffer.writeu16(RESERVED_BUFFER, pos, value / 2^8)
+	pos += 2
+
+	buffer.writeu8(RESERVED_BUFFER, pos, value)
+	cursor.pos = pos + 1
 end
 
 local function readi8(cursor: ReadCursor): number
@@ -356,8 +286,18 @@ local function readi16(cursor: ReadCursor): number
 end
 
 local function readi24(cursor: ReadCursor): number
-	local value = readi24_helper(cursor.buff, cursor.pos)
-	cursor.pos += 3
+	local buff, pos = cursor.buff, cursor.pos
+
+	local value = 2^8 * buffer.readu16(buff, pos)
+	pos += 2
+
+	value += buffer.readu8(buff, pos)
+	cursor.pos = pos + 1
+
+	if value >= 2^23 then
+		return value - 2^24
+	end
+
 	return value
 end
 
@@ -368,13 +308,62 @@ local function readi32(cursor: ReadCursor): number
 end
 
 local function readi53(cursor: ReadCursor): number
-	local value = readi53_helper(cursor.buff, cursor.pos)
-	cursor.pos += 7
+	local buff, pos = cursor.buff, cursor.pos
+
+	local value = 2^24 * buffer.readu32(buff, pos)
+	pos += 4
+
+	value += 2^8 * buffer.readu16(buff, pos)
+	pos += 2
+
+	value += buffer.readu8(buff, pos)
+	cursor.pos = pos + 1
+
+	if value >= 2^52 then
+		return value - 2^53
+	end
+
 	return value
 end
 
 local function writef16(cursor: WriteCursor, value: number)
-	writef16_helper(RESERVED_BUFFER, cursor.pos, value)
+	if value ~= value then
+		buffer.writeu16(RESERVED_BUFFER, cursor.pos, 0x7E01)
+		cursor.pos += 2
+		return
+	elseif value == 0 then
+		buffer.writeu16(RESERVED_BUFFER, cursor.pos, 0x0000)
+		cursor.pos += 2
+		return
+	end
+
+	local sign = 0
+	if value < 0 then
+		sign = 0x8000
+		value = -value
+	end
+
+	if value > 65504 then
+		buffer.writeu16(RESERVED_BUFFER, cursor.pos, bit32.bor(sign, 0x7C00))
+		cursor.pos += 2
+		return
+	end
+
+	local fraction, exponent = math.frexp(value)
+	if exponent < -13 then
+		fraction = fraction * math.ldexp(1, exponent + 13)
+		exponent = 0
+	else
+		exponent = exponent + 14
+		fraction = (fraction * 2 - 1)
+	end
+
+	buffer.writeu16(RESERVED_BUFFER, cursor.pos, bit32.bor(
+		sign,
+		bit32.lshift(exponent, 10),
+		fraction * 1024
+	))
+
 	cursor.pos += 2
 end
 
@@ -388,8 +377,42 @@ local function writef64(cursor: WriteCursor, value: number)
 	cursor.pos += 8
 end
 
+local f16_lut = {}
+do
+	for value = 0, 2 ^ 16 - 1 do
+		local result
+		
+		local banded = bit32.band(value, 0x7C00)
+		if value == 0 then
+			result = (bit32.band(value, 0x8000) ~= 0) and -0 or 0
+			continue
+		elseif value == 0x7C00 then
+			result = math.huge
+			continue
+		elseif value == 0xFC00 then
+			result = -math.huge
+			continue
+		elseif (banded == 0x7C00) and (bit32.band(value, 0x03FF) ~= 0) then
+			result = 0/0
+			continue
+		end
+
+		local sign = bit32.band(value, 0x8000) == 0 and 1 or -1
+		local exponent = bit32.rshift(banded, 10)
+		local fraction = bit32.band(value, 0x03FF) / 1024
+
+		if exponent == 0 then
+			result = sign * math.ldexp(fraction, -14)
+		else
+			result = sign * math.ldexp(1 + fraction, exponent - 15)
+		end
+
+		f16_lut[value] = result
+	end
+end
+
 local function readf16(cursor: ReadCursor): number
-	local value = readf16_helper(cursor.buff, cursor.pos)
+	local value = f16_lut[buffer.readu16(cursor.buff, cursor.pos)]
 	cursor.pos += 2
 	return value
 end
@@ -407,6 +430,8 @@ local function readf64(cursor: ReadCursor): number
 end
 
 local function writevlq(cursor: WriteCursor, value: number)
+	local pos = cursor.pos
+
 	repeat
 		local byte = value % 2^7
 		value = (value - byte) / 2^7
@@ -415,21 +440,30 @@ local function writevlq(cursor: WriteCursor, value: number)
 			byte += 2^7
 		end
 
-		writeu8(cursor, byte)
+		buffer.writeu8(RESERVED_BUFFER, pos, byte)
+		pos += 1
 	until value == 0
+
+	cursor.pos = pos
 end
 
 local function readvlq(cursor: ReadCursor): number
+	local buff, pos = cursor.buff, cursor.pos
+
 	local result = 0
 	local shift = 1
 
 	repeat
-		local byte = readu8(cursor)
+		local byte = buffer.readu8(buff, pos)
+		pos += 1
+
 		local chunk = byte % 2^7
 
 		result += chunk * shift
 		shift *= 2^7
 	until byte < 2^7
+
+	cursor.pos = pos
 
 	return result
 end
@@ -468,7 +502,7 @@ local function readbuffer(cursor: ReadCursor): buffer
 end
 
 local function writebool(cursor: WriteCursor, a: boolean, b: boolean?, c: boolean?, d: boolean?, e: boolean?, f: boolean?, g: boolean?, h: boolean?)
-	writeu8(cursor,
+	buffer.writeu8(RESERVED_BUFFER, cursor.pos, 
 		(a and 2^0 or 0) +
 		(b and 2^1 or 0) +
 		(c and 2^2 or 0) +
@@ -478,10 +512,14 @@ local function writebool(cursor: WriteCursor, a: boolean, b: boolean?, c: boolea
 		(g and 2^6 or 0) +
 		(h and 2^7 or 0)
 	)
+
+	cursor.pos += 1
 end
 
 local function readbool(cursor: ReadCursor): (boolean, boolean, boolean, boolean, boolean, boolean, boolean, boolean)
-	local value = readu8(cursor)
+	local value = buffer.readu8(cursor.buff, cursor.pos)
+	cursor.pos += 1
+
 	return
 		bit32.band(value, 2^0) ~= 0,
 		bit32.band(value, 2^1) ~= 0,
@@ -494,11 +532,14 @@ local function readbool(cursor: ReadCursor): (boolean, boolean, boolean, boolean
 end
 
 local function writebool_simple(cursor: WriteCursor, value: boolean)
-	writeu8(cursor, value and 1 or 0)
+	buffer.writeu8(RESERVED_BUFFER, cursor.pos, value and 1 or 0)
+	cursor.pos += 1
 end
 
 local function readboool_simple(cursor: ReadCursor): boolean
-	return readu8(cursor) == 1
+	local value = buffer.readu8(cursor.buff, cursor.pos)
+	cursor.pos += 1
+	return value == 1
 end
 
 local function writestring(cursor: WriteCursor, value: string)
@@ -516,31 +557,50 @@ local function readstring(cursor: ReadCursor): string
 end
 
 local function writecolor3(cursor: WriteCursor, value: Color3)
-	writeu8(cursor, value.R * 255)
-	writeu8(cursor, value.G * 255)
-	writeu8(cursor, value.B * 255)
+	local pos = cursor.pos
+
+	buffer.writeu8(RESERVED_BUFFER, pos, value.R * 255)
+	pos += 1
+
+	buffer.writeu8(RESERVED_BUFFER, pos, value.G * 255)
+	pos += 1
+
+	buffer.writeu8(RESERVED_BUFFER, pos, value.B * 255)
+	cursor.pos = pos + 1
 end
 
 local function readcolor3(cursor: ReadCursor): Color3
-	return Color3.fromRGB(
-		readu8(cursor),
-		readu8(cursor),
-		readu8(cursor)
-	)
+	local buff, pos = cursor.buff, cursor.pos
+
+	local r = buffer.readu8(buff, pos)
+	pos += 1
+
+	local g = buffer.readu8(buff, pos)
+	pos += 1
+
+	local b = buffer.readu8(buff, pos)
+	cursor.pos = pos + 1
+
+	return Color3.fromRGB(r, g, b)
 end
 
 local function writeopt<T>(cursor: WriteCursor, write_method: (cursor: WriteCursor, value: T) -> (), value: T?)
 	if value == nil then
-		writeu8(cursor, 0)
+		buffer.writeu8(RESERVED_BUFFER, cursor.pos, 0)
+		cursor.pos += 1
 	else
-		writeu8(cursor, 1)
+		buffer.writeu8(RESERVED_BUFFER, cursor.pos, 1)
+		cursor.pos += 1
+
 		write_method(cursor, value)
 	end
 end
 
 local function readopt<T>(cursor: ReadCursor, read_method: (cursor: ReadCursor) -> T): T?
-	local present = readu8(cursor)
-	if present == 1 then
+	local is_present = buffer.readu8(cursor.buff, cursor.pos)
+	cursor.pos += 1
+
+	if is_present == 1 then
 		return read_method(cursor)
 	else
 		return nil
@@ -663,15 +723,20 @@ local function literal_codec<T>(literals: {T}): Codec<T>
 		error(string.format("cannot have more than 255 literals, got %d", #literals))
 	end
 
-	local inverse_literals = inverse_table(literals)
+	local inverse_literals = {}
+	for i, v in literals do
+		inverse_literals[v] = i
+	end
 
 	local codec: Codec<T> = {
 		write = function(cursor, value: T)
 			local index = inverse_literals[value]
-			writeu8(cursor, index - 1)
+			buffer.writeu8(RESERVED_BUFFER, cursor.pos, index - 1)
+			cursor.pos += 1
 		end,
 		read = function(cursor)
-			local index = readu8(cursor)
+			local index = buffer.readu8(cursor.buff, cursor.pos)
+			cursor.pos += 1
 			return literals[index + 1]
 		end,
 	}
@@ -717,19 +782,23 @@ local function opt_codec<T>(inner: Codec<T>): Codec<T?>
 
 	local write, read = inner.write, inner.read
 
-	--inline for slightly better speed yknow
 	local codec: Codec<T?> = {
 		write = function(cursor, value: T?)
 			if value == nil then
-				writeu8(cursor, 0)
+				buffer.writeu8(RESERVED_BUFFER, cursor.pos, 0)
+				cursor.pos += 1
 			else
-				writeu8(cursor, 1)
+				buffer.writeu8(RESERVED_BUFFER, cursor.pos, 1)
+				cursor.pos += 1
+
 				write(cursor, value)
 			end
 		end,
 		read = function(cursor)
-			local present = readu8(cursor)
-			if present == 1 then
+			local is_present = buffer.readu8(cursor.buff, cursor.pos)
+			cursor.pos += 1
+
+			if is_present == 1 then
 				return read(cursor)
 			else
 				return nil
@@ -990,13 +1059,24 @@ local function cframe_codec(position_codec: Codec<number>, position_scale: numbe
 		write = function(cursor, value: CFrame)
 			local rot_x, rot_y, rot_z = value:ToOrientation()
 			local id = rotation_to_id[rot_x] and rotation_to_id[rot_x][rot_y] and rotation_to_id[rot_x][rot_y][rot_z]
+
 			if id then
-				writeu8(cursor, id)
+				buffer.writeu8(RESERVED_BUFFER, cursor.pos, id)
+				cursor.pos += 1
 			else
-				writeu8(cursor, 0)
-				writeu16(cursor, math.map(rot_x, -PI, PI, 0, 2^16 - 1))
-				writeu16(cursor, math.map(rot_y, -PI, PI, 0, 2^16 - 1))
-				writeu16(cursor, math.map(rot_z, -PI, PI, 0, 2^16 - 1))
+				local pos = cursor.pos
+
+				buffer.writeu8(RESERVED_BUFFER, pos, 0)
+				pos += 1
+
+				buffer.writeu16(RESERVED_BUFFER, pos, math.map(rot_x, -PI, PI, 0, 2^16 - 1))
+				pos += 2
+
+				buffer.writeu16(RESERVED_BUFFER, pos, math.map(rot_y, -PI, PI, 0, 2^16 - 1))
+				pos += 2
+
+				buffer.writeu16(RESERVED_BUFFER, pos, math.map(rot_z, -PI, PI, 0, 2^16 - 1))
+				cursor.pos = pos + 2
 			end
 
 			position_write(cursor, value.X * scale)
@@ -1004,7 +1084,9 @@ local function cframe_codec(position_codec: Codec<number>, position_scale: numbe
 			position_write(cursor, value.Z * scale)
 		end,
 		read = function(cursor)
-			local id = readu8(cursor)
+			local id = buffer.readu8(cursor.buff, cursor.pos)
+			cursor.pos += 1
+
 			local angles = id_to_rotation[id]
 			if angles then
 				return CFrame.new(
@@ -1013,9 +1095,17 @@ local function cframe_codec(position_codec: Codec<number>, position_scale: numbe
 					position_read(cursor) / scale
 				) * angles
 			else
-				local q_x = math.map(readu16(cursor), 0, 2^16 - 1, -PI, PI)
-				local q_y = math.map(readu16(cursor), 0, 2^16 - 1, -PI, PI)
-				local q_z = math.map(readu16(cursor), 0, 2^16 - 1, -PI, PI)
+				local buff, pos = cursor.buff, cursor.pos
+
+				local q_x = math.map(buffer.readu16(buff, pos), 0, 2^16 - 1, -PI, PI)
+				pos += 2
+
+				local q_y = math.map(buffer.readu16(buff, pos), 0, 2^16 - 1, -PI, PI)
+				pos += 2
+
+				local q_z = math.map(buffer.readu16(buff, pos), 0, 2^16 - 1, -PI, PI)
+				cursor.pos = pos + 2
+
 				local w = math.sqrt(1 - math.clamp(q_x * q_x + q_y * q_y + q_z * q_z, 0, 1))
 
 				return CFrame.new(
