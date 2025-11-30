@@ -534,11 +534,13 @@ print(permissions.read(reader)) --> {CanEdit = true}
 false flags get treated as nil during reading for faster read speeds.
 :::
 
+:::tip
 If you want better types for write/read instead of just ```{[string]: boolean?}``` you can cast the returned codec like so:
 ```luau
 local permissions = scrivener.set({"CanEdit", "CanDelete", "IsAdmin"}) :: scrivener.SetTransformer<"CanEdit" | "CanDelete" | "IsAdmin">
 --resulting write/read value type: {CanEdit: boolean?, CanDelete: boolean?, IsAdmin: boolean?}
 ```
+:::
 
 ---
 
