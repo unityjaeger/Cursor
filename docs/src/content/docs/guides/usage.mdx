@@ -386,7 +386,7 @@ The codec returned by 'vector3' uses the provided 'number_codec' for each axis o
 
 ### Example
 ```luau
-local vec = scrivener.vector3(f32)
+local vec = scrivener.vector3(scrivener.f32)
 
 local writer = scrivener.write_cursor()
 vec.write(writer, Vector3.one)
@@ -413,7 +413,7 @@ This is useful for non-floating point position codecs, as you can get custom dec
 
 ### Example
 ```luau
-local cf = scrivener.cframe(f32)
+local cf = scrivener.cframe(scrivener.f32)
 local cf_with_scale = scrivener.cframe(i24, 100)
 
 local writer = scrivener.write_cursor()
@@ -468,7 +468,7 @@ It serializes a list of elements using the provided 'element_codec'.
 
 ### Example
 ```luau
-local arr = scrivener.array(u32)
+local arr = scrivener.array(scrivener.u32)
 
 local writer = scrivener.write_cursor()
 arr.write(writer, {1, 2, 3, 4, 5})
@@ -553,7 +553,7 @@ function map<K, V>(key_codec: Codec<K>, value_codec: Codec<V>): Codec<{[K]: V}>
 
 ### Example
 ```luau
-local apples = scrivener.map(string, u8)
+local apples = scrivener.map(scrivener.string, scrivener.u8)
 
 local writer = scrivener.write_cursor()
 apples.write(writer, {
@@ -579,9 +579,9 @@ function struct(schema: {[string]: Codec<any>}): Codec<{[string]: any}>
 ### Example
 ```luau
 local data = scrivener.struct{[
-    name = string,
-    age = u8,
-    some_array = array(f32)
+    name = scrivener.string,
+    age = scrivener.u8,
+    some_array = scrivener.array(scrivener.f32)
 ]}
 
 local writer = scrivener.write_cursor()
@@ -602,9 +602,9 @@ Structs can also contain optional fields, but these need to be declared differen
 To mark a field as optional, wrap the value in 'mark_opt' like so:
 ```luau
 local data = scrivener.struct{[
-    name = mark_opt(string),
-    age = u8,
-    some_array = mark_opt(array(f32))
+    name = scrivener.mark_opt(scrivener.string),
+    age = scrivener.u8,
+    some_array = scrivener.mark_opt(scrivener.array(scrivener.f32))
 ]}
 ```
 
@@ -620,8 +620,8 @@ A 'variant' is a tagged union: a fixed set of possible cases, each with its own 
 ### Example
 ```luau
 local choice = scrivener.variant({
-    a = u8,
-    b = string
+    a = scrivener.u8,
+    b = scrivener.string
 })
 
 local writer = scrivener.write_cursor()
