@@ -43,12 +43,39 @@ type function EitherOr(a: type, b: type)
 	end
 end
 
-export type function SetTransformer(t: type)
-	local new = types.newtable()
+type function SetTransformer(t: type)
+	local union
+	
 	for _, v in t:components() do
-		new:setproperty(v, types.optional(types.boolean))
+		local new = types.newtable()
+		new:setproperty(v, types.boolean)
+		
+		if not union then
+			union = new
+		else
+			union = types.unionof(union, new)
+		end
 	end
-	return Codec(new :: any)
+	
+	return union
+end
+
+type function StripEmptyLiterals(t: type)
+	local union
+	
+	for _, v in t:components() do
+		if v:value() == "" then
+			continue
+		end
+		
+		if not union then
+			union = v
+		else
+			union = types.unionof(union, v)
+		end
+	end
+	
+	return union
 end
 
 type function GetCodecType(t: type)
@@ -710,7 +737,7 @@ local color3_codec: Codec<Color3> = {
 }
 
 local literal_codec_cache = {}
-local function literal_codec<T>(literals: {T}): Codec<T>
+local function literal_codec_hidden<T>(literals: {T}): Codec<T>
 	if literal_codec_cache[literals] then
 		return literal_codec_cache[literals]
 	end
@@ -740,6 +767,10 @@ local function literal_codec<T>(literals: {T}): Codec<T>
 	literal_codec_cache[literals] = codec
 
 	return codec
+end
+
+local function literal_codec<T>(literals: {T} | {""}): Codec<StripEmptyLiterals<T>>
+	return literal_codec_hidden(literals) :: any
 end
 
 local vector_codec_cache = {}
@@ -1130,7 +1161,7 @@ local function variant_codec_hidden<T>(variants: T): Codec<T>
 		table.insert(literals, kind)
 	end
 
-	local kind_codec = literal_codec(literals)
+	local kind_codec = literal_codec_hidden(literals)
 	local kind_write, kind_read = kind_codec.write, kind_codec.read
 
 	local codec: Codec<{ kind: string, value: any }> = {
@@ -1193,7 +1224,7 @@ local function bitarray_codec(byte_count: number): Codec<{boolean}>
 end
 
 local set_codec_cache = {}
-local function set_codec<T>(set: {string}): Codec<EitherOr<T, {[string]: boolean?}>>
+local function set_codec_hidden(set: {string}): Codec<{[string]: boolean}>
 	if set_codec_cache[set] then
 		return set_codec_cache[set]
 	end
@@ -1207,8 +1238,8 @@ local function set_codec<T>(set: {string}): Codec<EitherOr<T, {[string]: boolean
 	local bitarray = bitarray_codec(math.ceil(len / 8))
 	local bitarray_write, bitarray_read = bitarray.write, bitarray.read
 
-	local codec: Codec<T> = {
-		write = function(cursor, value: {[string]: boolean?})
+	local codec: Codec<{[string]: boolean}> = {
+		write = function(cursor, value: {[string]: boolean})
 			local bools = table.create(len, false)
 
 			for name, bool in value do
@@ -1236,6 +1267,10 @@ local function set_codec<T>(set: {string}): Codec<EitherOr<T, {[string]: boolean
 	set_codec_cache[set] = codec
 
 	return codec
+end
+
+local function set_codec<T>(set: {T} | {""}): Codec<SetTransformer<T>>
+	return set_codec_hidden(set :: any) :: any
 end
 
 local function get_reserved_buffer(): buffer
