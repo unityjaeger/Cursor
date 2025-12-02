@@ -196,6 +196,26 @@ local function writeu32(cursor: WriteCursor, value: number)
 	cursor.pos += 4
 end
 
+local function writeu40(cursor: WriteCursor, value: number)
+	local pos = cursor.pos
+
+	buffer.writeu32(RESERVED_BUFFER, pos, value / 2^8)
+	pos += 4
+
+	buffer.writeu8(RESERVED_BUFFER, pos, value)
+	cursor.pos = pos + 1
+end
+
+local function writeu48(cursor: WriteCursor, value: number)
+	local pos = cursor.pos
+
+	buffer.writeu32(RESERVED_BUFFER, pos, value / 2^16)
+	pos += 4
+
+	buffer.writeu16(RESERVED_BUFFER, pos, value)
+	cursor.pos = pos + 2
+end
+
 local function writeu53(cursor: WriteCursor, value: number)
 	local pos = cursor.pos
 
@@ -236,6 +256,30 @@ end
 local function readu32(cursor: ReadCursor): number
 	local value = buffer.readu32(cursor.buff, cursor.pos)
 	cursor.pos += 4
+	return value
+end
+
+local function readu40(cursor: ReadCursor): number
+	local buff, pos = cursor.buff, cursor.pos
+	
+	local value = 2^8 * buffer.readu32(buff, pos)
+	pos += 4
+	
+	value += buffer.readu8(buff, pos)
+	cursor.pos = pos + 1
+	
+	return value
+end
+
+local function readu48(cursor: ReadCursor): number
+	local buff, pos = cursor.buff, cursor.pos
+	
+	local value = 2^16 * buffer.readu32(buff, pos)
+	pos += 4
+	
+	value += buffer.readu16(buff, pos)
+	cursor.pos = pos + 2
+	
 	return value
 end
 
@@ -281,6 +325,34 @@ end
 local function writei32(cursor: WriteCursor, value: number)
 	buffer.writei32(RESERVED_BUFFER, cursor.pos, value)
 	cursor.pos += 4
+end
+
+local function writei40(cursor: WriteCursor, value: number)
+	if value < 0 then
+		value += 2^40
+	end
+	
+	local pos = cursor.pos
+
+	buffer.writeu32(RESERVED_BUFFER, pos, value / 2^8)
+	pos += 4
+
+	buffer.writeu8(RESERVED_BUFFER, pos, value)
+	cursor.pos = pos + 1
+end
+
+local function writei48(cursor: WriteCursor, value: number)
+	if value < 0 then
+		value += 2^48
+	end
+	
+	local pos = cursor.pos
+
+	buffer.writeu32(RESERVED_BUFFER, pos, value / 2^16)
+	pos += 4
+
+	buffer.writeu16(RESERVED_BUFFER, pos, value)
+	cursor.pos = pos + 2
 end
 
 local function writei53(cursor: WriteCursor, value: number)
@@ -331,6 +403,38 @@ end
 local function readi32(cursor: ReadCursor): number
 	local value = buffer.readi32(cursor.buff, cursor.pos)
 	cursor.pos += 4
+	return value
+end
+
+local function readi40(cursor: ReadCursor): number
+	local buff, pos = cursor.buff, cursor.pos
+
+	local value = 2^8 * buffer.readu32(buff, pos)
+	pos += 4
+
+	value += buffer.readu8(buff, pos)
+	cursor.pos = pos + 1
+	
+	if value >= 2^39 then
+		return value - 2^40
+	end
+
+	return value
+end
+
+local function readi48(cursor: ReadCursor): number
+	local buff, pos = cursor.buff, cursor.pos
+
+	local value = 2^16 * buffer.readu32(buff, pos)
+	pos += 4
+
+	value += buffer.readu16(buff, pos)
+	cursor.pos = pos + 2
+	
+	if value >= 2^47 then
+		return value - 2^48
+	end
+
 	return value
 end
 
@@ -638,72 +742,92 @@ end
 
 local u8_codec: Codec<number> = {
 	write = writeu8,
-	read = readu8,
+	read = readu8
 }
 
 local u16_codec: Codec<number> = {
 	write = writeu16,
-	read = readu16,
+	read = readu16
 }
 
 local u24_codec: Codec<number> = {
 	write = writeu24,
-	read = readu24,
+	read = readu24
 }
 
 local u32_codec: Codec<number> = {
 	write = writeu32,
-	read = readu32,
+	read = readu32
+}
+
+local u40_codec: Codec<number> = {
+	write = writeu40,
+	read = readu40
+}
+
+local u48_codec: Codec<number> = {
+	write = writeu48,
+	read = readu48
 }
 
 local u53_codec: Codec<number> = {
 	write = writeu53,
-	read = readu53,
+	read = readu53
 }
 
 local i8_codec: Codec<number> = {
 	write = writei8,
-	read = readi8,
+	read = readi8
 }
 
 local i16_codec: Codec<number> = {
 	write = writei16,
-	read = readi16,
+	read = readi16
 }
 
 local i24_codec: Codec<number> = {
 	write = writei24,
-	read = readi24,
+	read = readi24
 }
 
 local i32_codec: Codec<number> = {
 	write = writei32,
-	read = readi32,
+	read = readi32
+}
+
+local i40_codec: Codec<number> = {
+	write = writei40,
+	read = readi40
+}
+
+local i48_codec: Codec<number> = {
+	write = writei48,
+	read = readi48
 }
 
 local i53_codec: Codec<number> = {
 	write = writei53,
-	read = readi53,
+	read = readi53
 }
 
 local f16_codec: Codec<number> = {
 	write = writef16,
-	read = readf16,
+	read = readf16
 }
 
 local f32_codec: Codec<number> = {
 	write = writef32,
-	read = readf32,
+	read = readf32
 }
 
 local f64_codec: Codec<number> = {
 	write = writef64,
-	read = readf64,
+	read = readf64
 }
 
 local vlq_codec: Codec<number> = {
 	write = writevlq,
-	read = readvlq,
+	read = readvlq
 }
 
 local svlq_codec: Codec<number> = {
@@ -718,7 +842,7 @@ local buffer_codec: Codec<buffer> = {
 
 local string_codec: Codec<string> = {
 	write = writestring,
-	read = readstring,
+	read = readstring
 }
 
 local bool_codec: TupleCodec<...boolean> = {
@@ -1286,22 +1410,30 @@ return {
 	writeu16 = writeu16,
 	writeu24 = writeu24,
 	writeu32 = writeu32,
+	writeu40 = writeu40,
+	writeu48 = writeu48,
 	writeu53 = writeu53,
 	readu8 = readu8,
 	readu16 = readu16,
 	readu24 = readu24,
 	readu32 = readu32,
+	readu40 = readu40,
+	readu48 = readu48,
 	readu53 = readu53,
 
 	writei8 = writei8,
 	writei16 = writei16,
 	writei24 = writei24,
 	writei32 = writei32,
+	writei40 = writei40,
+	writei48 = writei48,
 	writei53 = writei53,
 	readi8 = readi8,
 	readi16 = readi16,
 	readi24 = readi24,
 	readi32 = readi32,
+	readi40 = readi40,
+	readi48 = readi48,
 	readi53 = readi53,
 
 	writef16 = writef16,
@@ -1334,12 +1466,16 @@ return {
 	u16 = u16_codec,
 	u24 = u24_codec,
 	u32 = u32_codec,
+	u40 = u40_codec,
+	u48 = u48_codec,
 	u53 = u53_codec,
 
 	i8 = i8_codec,
 	i16 = i16_codec,
 	i24 = i24_codec,
 	i32 = i32_codec,
+	i40 = i40_codec,
+	i48 = i48_codec,
 	i53 = i53_codec,
 
 	f16 = f16_codec,
