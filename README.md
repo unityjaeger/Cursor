@@ -1,2 +1,2 @@
 # Scrivener
-unityjaeger.github.io/Scrivener/
+[Docs](unityjaeger.github.io/Scrivener/)
