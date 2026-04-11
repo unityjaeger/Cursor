@@ -46,6 +46,12 @@ local function process(buf: buffer): buffer?
 	local generation = buffer.readu8(buf, 1)
 	local index = buffer.readu8(buf, 2)
 	local count = buffer.readu8(buf, 3)
+
+	if count == 1 then
+		local out = buffer.create(buffer.len(buf) - HEADER_SIZE)
+		buffer.copy(out, 0, buf, HEADER_SIZE)
+		return out
+	end
 	
 	if map[id] and generations[id] ~= generation then
 		map[id] = nil
